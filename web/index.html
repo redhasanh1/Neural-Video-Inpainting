@@ -1987,8 +1987,6 @@
         </div>
     </section>
 
-    
-
     <!-- FAQ Section -->
     <section class="faq-section">
         <h2 class="faq-title">Frequently Asked Questions</h2>
@@ -4926,77 +4924,7 @@ document.querySelectorAll('.faq-question').forEach(btn => {
 
 <!-- sitewide-nav: every page links to every other page, so none of them are
      orphans. Google will not re-crawl a URL nothing links to. -->
-<!-- Expanded Content Section for Search Quality -->
-    <section id="about" style="padding: 5rem 2rem; background: linear-gradient(180deg, var(--bg-primary) 0%, rgba(102, 126, 234, 0.03) 100%);">
-        <div style="max-width: 1000px; margin: 0 auto;">
-            <div style="text-align: center; margin-bottom: 3rem;">
-                <h2 style="font-size: 2.25rem; font-weight: 700; margin-bottom: 1rem; color: var(--text-primary);">
-                    Professional AI Video Object Removal
-                </h2>
-                <p style="color: var(--text-secondary); font-size: 1.15rem; line-height: 1.8; max-width: 800px; margin: 0 auto;">
-                    MarkRemoverAI helps creators, marketers, and production teams clean up footage by removing unwanted objects, people, text, and logos from videos automatically. Our web-based tool uses segmentation and inpainting models to track a selected object across every frame, remove it, and reconstruct the background so the final video looks natural.
-                </p>
-            </div>
 
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 2rem; margin-bottom: 4rem;">
-                <div style="background: var(--bg-card); border-radius: 20px; padding: 2rem; border: 1px solid rgba(102, 126, 234, 0.15);">
-                    <h3 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.75rem; color: var(--text-primary);">Remove People from Video</h3>
-                    <p style="color: var(--text-secondary); line-height: 1.7;">
-                        Whether it is a passerby in a travel shot or an audience member in event footage, you can select a person and let the AI remove them frame by frame. The tool tracks movement automatically and fills the background using surrounding pixels.
-                    </p>
-                </div>
-                
-                <div style="background: var(--bg-card); border-radius: 20px; padding: 2rem; border: 1px solid rgba(102, 126, 234, 0.15);">
-                    <h3 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.75rem; color: var(--text-primary);">Remove Text and Overlays</h3>
-                    <p style="color: var(--text-secondary); line-height: 1.7;">
-                        Old captions, date stamps, and on-screen graphics can be removed without re-editing the entire clip. Draw a loose mask around the text and the AI handles the rest.
-                    </p>
-                </div>
-            </div>
-
-            <div style="background: var(--bg-card); border-radius: 24px; padding: 2.5rem; border: 1px solid rgba(102, 126, 234, 0.15); margin-bottom: 4rem;">
-                <h2 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 1.25rem; color: var(--text-primary);">How the Technology Works</h2>
-                <p style="color: var(--text-secondary); line-height: 1.8; margin-bottom: 1rem;">
-                    MarkRemoverAI combines three computer-vision steps into one streamlined workflow. First, the uploaded video is decoded and split into individual frames. Next, the object you select is segmented and tracked through the sequence using a segmentation model. Finally, an inpainting model reconstructs the pixels behind the removed object by borrowing context from neighboring frames and nearby image regions.
-                </p>
-                <p style="color: var(--text-secondary); line-height: 1.8; margin-bottom: 1rem;">
-                    Because the model looks at the whole video rather than treating each frame in isolation, results are more consistent when the camera moves or lighting changes. You can refine the mask with a brush, rectangle, ellipse, or polygon selection, and preview the result before downloading.
-                </p>
-                <p style="color: var(--text-secondary); line-height: 1.8;">
-                    Supported input formats include MP4, MOV, WebM, MKV, and WMV. Output is delivered as a downloadable MP4. Clips can be up to 90 seconds long, and the tool works in a standard web browser without installing plugins or desktop software.
-                </p>
-            </div>
-
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; margin-bottom: 4rem;">
-                <div style="text-align: center; padding: 1.5rem;">
-                    <div style="font-size: 2rem; font-weight: 700; color: #667eea; margin-bottom: 0.5rem;">Browser-Based</div>
-                    <p style="color: var(--text-secondary); line-height: 1.6;">No download or installation required. Upload, edit, and download directly from your browser.</p>
-                </div>
-                <div style="text-align: center; padding: 1.5rem;">
-                    <div style="font-size: 2rem; font-weight: 700; color: #667eea; margin-bottom: 0.5rem;">Multiple Selection Tools</div>
-                    <p style="color: var(--text-secondary); line-height: 1.6;">Brush, rectangle, ellipse, and polygon masks let you mark objects of any shape or size.</p>
-                </div>
-                <div style="text-align: center; padding: 1.5rem;">
-                    <div style="font-size: 2rem; font-weight: 700; color: #667eea; margin-bottom: 0.5rem;">Temporal Consistency</div>
-                    <p style="color: var(--text-secondary); line-height: 1.6;">The AI tracks objects across frames so removals stay smooth even with camera motion.</p>
-                </div>
-                <div style="text-align: center; padding: 1.5rem;">
-                    <div style="font-size: 2rem; font-weight: 700; color: #667eea; margin-bottom: 0.5rem;">Private Processing</div>
-                    <p style="color: var(--text-secondary); line-height: 1.6;">Uploaded videos and generated results are kept private to your account and removed according to our data retention policy.</p>
-                </div>
-            </div>
-
-            <div style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.08) 0%, rgba(240, 147, 251, 0.08) 100%); border-radius: 24px; padding: 2.5rem; border: 1px solid rgba(102, 126, 234, 0.15);">
-                <h2 style="font-size: 1.75rem; font-weight: 700; margin-bottom: 1.25rem; color: var(--text-primary);">Who Uses MarkRemoverAI?</h2>
-                <p style="color: var(--text-secondary); line-height: 1.8; margin-bottom: 1rem;">
-                    Content creators use MarkRemoverAI to clean up footage for YouTube, TikTok, and Instagram Reels. Marketing teams remove distracting backgrounds or dated branding from product videos. Event videographers remove bystanders from ceremony footage. E-learning producers erase whiteboard marks or annotations they no longer need.
-                </p>
-                <p style="color: var(--text-secondary); line-height: 1.8;">
-                    The tool is also useful for real-estate videographers who want to remove cars or temporary objects from property tours, and for privacy-conscious editors who need to blur or erase faces and license plates before publishing.
-                </p>
-            </div>
-        </div>
-    </section>
 
     <nav aria-label="Site" data-sitewide-nav style="background:#0f172a;padding:2.5rem 1.5rem 1.5rem;border-top:1px solid rgba(148,163,184,.2)">
   <div style="max-width:1100px;margin:0 auto;display:flex;flex-wrap:wrap;justify-content:flex-start">
