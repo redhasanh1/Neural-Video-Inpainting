@@ -1666,10 +1666,17 @@
                             <!-- Theater Mode Video Player - Direct canvas overlay, no fullscreen needed -->
                             <div id="professionalPlayer" style="display: none; box-shadow: 0 10px 40px rgba(0,0,0,0.5);">
                                 <!-- Video + Canvas Container -->
-                                <div id="videoWrapper">
+                                <div id="videoWrapper" style="position: relative;">
                                     <video id="previewVideo" playsinline webkit-playsinline preload="metadata"></video>
                                     <canvas id="maskCanvas" style="display: none; pointer-events: none;"></canvas>
+                                    <!-- Loading overlay shown while the preview is being prepared/transcoded -->
+                                    <div id="previewLoading" style="display:none; position:absolute; inset:0; z-index:5; background:rgba(10,10,25,0.82); color:#fff; flex-direction:column; align-items:center; justify-content:center; gap:12px; border-radius:inherit;">
+                                        <div style="width:42px; height:42px; border:4px solid rgba(255,255,255,0.25); border-top-color:#667eea; border-radius:50%; animation:previewSpin 0.9s linear infinite;"></div>
+                                        <div id="previewLoadingText" style="font-weight:600; font-size:15px;">Preparing your video…</div>
+                                        <div id="previewLoadingSub" style="font-size:12px; color:rgba(255,255,255,0.72); text-align:center; padding:0 16px;">Converting to a playable format — this takes a few seconds</div>
+                                    </div>
                                 </div>
+                                <style>@keyframes previewSpin { to { transform: rotate(360deg); } }</style>
 
                                 <!-- External Scrubber Bar (beneath video) -->
                                 <div id="theaterControls">
@@ -2211,13 +2218,29 @@
             }
         }
 
-        // Poll for HEVC transcode preview (iPhone videos)
-        // Server transcodes HEVC to H.264 for browser compatibility
+        // Loading overlay over the preview player (shown while transcoding / fetching the preview)
+        function showPreviewLoading(text, sub) {
+            const w = document.getElementById('videoWrapper');
+            if (w) w.style.position = 'relative';
+            const el = document.getElementById('previewLoading');
+            if (!el) return;
+            el.style.display = 'flex';
+            if (text !== undefined) { const t = document.getElementById('previewLoadingText'); if (t) t.textContent = text; }
+            if (sub !== undefined) { const s = document.getElementById('previewLoadingSub'); if (s) s.textContent = sub; }
+        }
+        function hidePreviewLoading() {
+            const el = document.getElementById('previewLoading');
+            if (el) el.style.display = 'none';
+        }
+
+        // Poll for transcode preview (mpeg4/hevc/wmv show black otherwise)
+        // Server transcodes to H.264 for browser compatibility
         async function pollForPreview(taskId, videoElem) {
             const maxAttempts = 30; // 30 seconds max wait
             let attempts = 0;
 
             console.log('[HEVC] Starting preview poll for task:', taskId);
+            showPreviewLoading('Preparing your video…', 'Getting your preview ready…');
 
             const poll = async () => {
                 try {
@@ -2234,26 +2257,44 @@
                         // crossOrigin='anonymous' keeps toDataURL() working on the cross-origin video.
                         if (videoElem._localBlobUrl && !data.transcoded) {
                             console.log('[HEVC] Original already browser-playable, keeping local blob');
+                            hidePreviewLoading();
                         } else {
+                            // The raw local blob is unrenderable for mpeg4/hevc/wmv (0x0, black), and the
+                            // CDN has no Range support so its URL can't be scrubbed. Fetch the transcoded
+                            // H.264 into a same-origin blob: it renders, stays seekable (in-memory), and
+                            // keeps the selector's canvas untainted (no crossOrigin needed).
                             const currentTime = videoElem.currentTime;
                             const wasPaused = videoElem.paused;
-
-                            videoElem.crossOrigin = 'anonymous';  // set BEFORE src so CORS mode applies to the load
-                            videoElem.src = data.url;
-                            videoElem._localBlobUrl = false;
-
-                            // Restore playback position
-                            videoElem.onloadedmetadata = () => {
-                                videoElem.currentTime = currentTime;
-                                if (!wasPaused) videoElem.play();
-                                // dimensions were 0x0 while on the black blob — let the selector re-read them
-                                window.dispatchEvent(new Event('resize'));
-                            };
-
-                            if (data.transcoded) {
-                                console.log('[HEVC] Switched to transcoded H.264 preview (blob was unrenderable)');
-                            } else {
-                                console.log('[HEVC] Using original video (not HEVC)');
+                            const oldBlob = (videoElem.src && videoElem.src.startsWith('blob:')) ? videoElem.src : null;
+                            showPreviewLoading('Loading preview…', 'Almost there');
+                            try {
+                                const resp = await fetch(data.url);   // CDN sends Access-Control-Allow-Origin:*
+                                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                                const blobUrl = URL.createObjectURL(await resp.blob());
+                                videoElem.removeAttribute('crossorigin');
+                                videoElem.crossOrigin = null;
+                                videoElem.src = blobUrl;
+                                videoElem._localBlobUrl = true;   // H.264 blob: renderable + seekable + untainted
+                                videoElem.onloadedmetadata = () => {
+                                    videoElem.currentTime = currentTime;
+                                    if (!wasPaused) videoElem.play();
+                                    window.dispatchEvent(new Event('resize'));  // selector re-reads real dimensions
+                                    hidePreviewLoading();
+                                    if (oldBlob) URL.revokeObjectURL(oldBlob);
+                                };
+                                console.log('[HEVC] Loaded transcoded H.264 as seekable blob');
+                            } catch (err) {
+                                // Fallback: play the CDN URL directly (renders + toDataURL via CORS; seeking limited)
+                                console.warn('[HEVC] Blob fetch failed, using CDN URL directly:', err);
+                                videoElem.crossOrigin = 'anonymous';
+                                videoElem.src = data.url;
+                                videoElem._localBlobUrl = false;
+                                videoElem.onloadedmetadata = () => {
+                                    videoElem.currentTime = currentTime;
+                                    if (!wasPaused) videoElem.play();
+                                    window.dispatchEvent(new Event('resize'));
+                                    hidePreviewLoading();
+                                };
                             }
                         }
                         return; // Done polling
@@ -2261,17 +2302,20 @@
 
                     if (data.status === 'processing') {
                         // Still transcoding, continue polling
+                        showPreviewLoading('Converting your video…', 'Optimizing for playback (' + (attempts + 1) + 's)…');
                         attempts++;
                         if (attempts < maxAttempts) {
                             setTimeout(poll, 1000);
                         } else {
                             console.log('[HEVC] Max poll attempts reached, keeping original');
+                            hidePreviewLoading();
                         }
                         return;
                     }
 
                     // status is 'not_found' or error - stop polling
                     console.log('[HEVC] Preview not available, using original');
+                    hidePreviewLoading();
 
                 } catch (err) {
                     console.error('[HEVC] Poll error:', err);
@@ -2279,6 +2323,8 @@
                     attempts++;
                     if (attempts < maxAttempts) {
                         setTimeout(poll, 1000);
+                    } else {
+                        hidePreviewLoading();
                     }
                 }
             };
