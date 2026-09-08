@@ -341,6 +341,11 @@ print("[DEBUG] FFmpeg init complete, creating Flask app...", flush=True)
 # [HEVC] Async transcode executor (non-blocking)
 hevc_transcode_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="HEVCTranscode")
 
+# Codecs a browser will actually play in a <video> element. Anything outside
+# this set has to be transcoded, not just HEVC - mpeg4, wmv and mpeg2 are all
+# "not HEVC" and all unplayable, which is what made uploads show a blank player.
+BROWSER_SAFE_CODECS = {'h264', 'avc1', 'vp8', 'vp9', 'av1', 'av01'}
+
 # [HEVC] Transcode HEVC to H.264 for browser preview
 def check_video_codec(video_path):
     """Check if video is HEVC/H.265 codec using ffprobe"""
@@ -377,11 +382,20 @@ def transcode_hevc_to_h264(input_path, output_path):
                 output_path
             ]
         else:
+            # CPU encode, so speed matters more than fidelity. This file is only
+            # ever the editor preview - the person watches it and taps the object
+            # they want gone - while the render still runs on the original at full
+            # resolution. Capping the preview at 720p on a fast preset turns a
+            # minute of encoding into a few seconds, which is the difference
+            # between someone waiting and someone leaving.
             cmd = [
                 FFMPEG_EXE, '-y', '-i', input_path,
-                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-                '-c:a', 'aac', '-b:a', '128k',
+                '-vf', "scale='min(1280,iw)':'min(1280,ih)'"
+                       ":force_original_aspect_ratio=decrease:force_divisible_by=2",
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+                '-c:a', 'aac', '-b:a', '96k',
                 '-movflags', '+faststart',
+                '-threads', '0',
                 output_path
             ]
         print(f"[HEVC] Transcoding to H.264: {input_path}")
@@ -452,18 +466,18 @@ def transcode_hevc_pipeline(video_url, task_id):
             except:
                 pass
 
-            if codec and codec not in ['hevc', 'h265', 'hev1']:
-                # Not HEVC - no transcode needed, skip full download!
+            if codec and codec in BROWSER_SAFE_CODECS:
+                # Browser can play this as-is - skip the full download.
                 redis_client.setex(f"preview_status:{task_id}", 86400, "original")
                 redis_client.setex(f"preview_url:{task_id}", 86400, video_url)
-                print(f"[HEVC] Not HEVC ({codec}), skipping download - saved bandwidth!")
+                print(f"[PREVIEW] {codec} plays in-browser, skipping download - saved bandwidth!")
                 return video_url
         else:
             codec = None
 
         # 3. HEVC detected (or couldn't check) - download full file
         temp_input = os.path.join(TEMP_DIR, f"{uuid.uuid4()}_input.mp4")
-        print(f"[HEVC] HEVC detected, downloading full video to {temp_input}")
+        print(f"[PREVIEW] {codec or 'unknown codec'} needs transcoding, downloading full video to {temp_input}")
 
         response = requests.get(video_url, stream=True, timeout=120)
         response.raise_for_status()
@@ -480,11 +494,11 @@ def transcode_hevc_pipeline(video_url, task_id):
             codec = check_video_codec(temp_input)
             print(f"[HEVC] Verified codec: {codec}")
 
-            if codec not in ['hevc', 'h265', 'hev1']:
-                # Not HEVC after all
+            if codec in BROWSER_SAFE_CODECS:
+                # Playable after all - no transcode needed
                 redis_client.setex(f"preview_status:{task_id}", 86400, "original")
                 redis_client.setex(f"preview_url:{task_id}", 86400, video_url)
-                print(f"[HEVC] Not HEVC ({codec}), using original URL")
+                print(f"[PREVIEW] {codec} plays in-browser, using original URL")
                 return video_url
 
         # 3. Transcode HEVC -> H.264
