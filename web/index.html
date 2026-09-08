@@ -2359,6 +2359,11 @@
                     document.getElementById('professionalPlayer').style.display = 'block';
                     previewImage.style.display = 'none';
 
+                    // Show the loading overlay IMMEDIATELY so the player never flashes black
+                    // while the raw file loads / uploads / transcodes. pollForPreview updates and
+                    // hides it once the real (or transcoded) video is ready.
+                    showPreviewLoading('Preparing your video…', 'Getting things ready…');
+
                     // Initialize professional video controls
                     initProfessionalPlayer(videoElem);
                     // Calculate credit cost based on video specs
@@ -2373,6 +2378,7 @@
                             if (duration > MAX_DURATION_SECONDS) {
                                 alert(`Video too long! Maximum duration is 1 minute 30 seconds.\n\nYour video: ${Math.round(duration)} seconds\n\nPlease upload a shorter video.`);
                                 // Reset the upload
+                                hidePreviewLoading();
                                 previewContainer.classList.remove('active');
                                 videoElem.src = '';
                                 if (fileInput) fileInput.value = '';
