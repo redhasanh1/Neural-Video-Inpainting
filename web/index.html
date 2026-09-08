@@ -2227,29 +2227,31 @@
                     console.log('[HEVC] Preview status:', data);
 
                     if (data.status === 'ready' && data.url) {
-                        // Preview ready! But DON'T change src if using local blob
-                        // (CDN URLs cause tainted canvas - breaks SAM2 selector toDataURL)
-                        if (videoElem._localBlobUrl) {
-                            if (data.transcoded) {
-                                console.log('[HEVC] Transcoded ready but keeping local blob for canvas compatibility');
-                            } else {
-                                console.log('[HEVC] Original video OK, using local blob');
-                            }
+                        // The local blob keeps the SAM2 selector's canvas untainted, but it is the
+                        // RAW upload — for mpeg4/hevc/wmv that file is unrenderable (0x0, black player).
+                        // transcoded:true means the server produced a browser-playable H.264, so we
+                        // MUST switch to it. The CDN sends Access-Control-Allow-Origin:*, so setting
+                        // crossOrigin='anonymous' keeps toDataURL() working on the cross-origin video.
+                        if (videoElem._localBlobUrl && !data.transcoded) {
+                            console.log('[HEVC] Original already browser-playable, keeping local blob');
                         } else {
-                            // Fallback: no local blob, use CDN URL
                             const currentTime = videoElem.currentTime;
                             const wasPaused = videoElem.paused;
 
+                            videoElem.crossOrigin = 'anonymous';  // set BEFORE src so CORS mode applies to the load
                             videoElem.src = data.url;
+                            videoElem._localBlobUrl = false;
 
                             // Restore playback position
                             videoElem.onloadedmetadata = () => {
                                 videoElem.currentTime = currentTime;
                                 if (!wasPaused) videoElem.play();
+                                // dimensions were 0x0 while on the black blob — let the selector re-read them
+                                window.dispatchEvent(new Event('resize'));
                             };
 
                             if (data.transcoded) {
-                                console.log('[HEVC] Transcoded H.264 preview loaded!');
+                                console.log('[HEVC] Switched to transcoded H.264 preview (blob was unrenderable)');
                             } else {
                                 console.log('[HEVC] Using original video (not HEVC)');
                             }
@@ -2444,8 +2446,10 @@
 
                 // Use LOCAL blob URL for video preview (prevents tainted canvas from CDN cross-origin)
                 // This allows SAM2 selector to capture frames with toDataURL()
+                videoElem.removeAttribute('crossorigin');  // blob is same-origin; clear any CORS mode left by a prior H.264 preview
+                videoElem.crossOrigin = null;
                 videoElem.src = URL.createObjectURL(file);
-                videoElem._localBlobUrl = true;  // Flag to prevent pollForPreview from changing src
+                videoElem._localBlobUrl = true;  // pollForPreview keeps this ONLY if the original is already browser-playable
 
                 // Initialize professional timeline for videos
                 if (file.type.startsWith('video/')) {
