@@ -3113,9 +3113,9 @@
             progressBar.style.width = '0%';
             progressPercent.textContent = '0%';
 
-            // Start countdown timer (4.5x video duration estimate)
+            // Start countdown timer (~11.25x video duration: 4.5x on the 5090, x2.5 for the slower 3090 worker)
             const videoDuration = videoElem.duration || 60;
-            let remainingSeconds = Math.ceil(videoDuration * 4.5);
+            let remainingSeconds = Math.ceil(videoDuration * 11.25);
             const countdownTimerElem = document.getElementById('countdownTimer');
             if (countdownTimerElem) {
                 countdownTimerElem.style.display = 'block';
