@@ -5,8 +5,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System dependencies are no longer needed for the lightweight web-only container.
-# The worker service handles all processing that requires ffmpeg, etc.
+# ffmpeg is here for one job only: converting an uploaded video into H.264 so
+# the browser can show it in the editor. Rendering still happens on the GPU
+# workers. Without this the preview falls back to the original file, and any
+# codec a browser cannot decode (mpeg4, wmv, mpeg2) shows a blank player.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy and install the minimal web-only requirements
 COPY requirements_web.txt .
@@ -32,4 +37,4 @@ ENV PYTHONUNBUFFERED=1 \
 EXPOSE 8080
 
 # Run with gunicorn (Railway sets PORT automatically)
-CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 1 --timeout 120 server_production:app"]
+CMD ["sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-8080} --workers 1 --threads 8 --worker-class gthread --timeout 120 --access-logfile - server_production:app"]

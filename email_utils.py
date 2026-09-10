@@ -48,7 +48,7 @@ def send_verification_email(to_email: str, verify_url: str):
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
 </head>
-<body style="margin: 0; padding: 0; font-family: Arial, Helvetica, sans-serif; background-color: #f4f4f4;">
+<body style="margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; background-color: #f4f4f4;">
     <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #f4f4f4;">
         <tr>
             <td align="center" style="padding: 40px 20px;">
@@ -94,7 +94,7 @@ def send_verification_email(to_email: str, verify_url: str):
                     <tr>
                         <td style="padding: 20px 40px; background-color: #f8f9fa; border-radius: 0 0 12px 12px;">
                             <p style="margin: 0; color: #999999; font-size: 12px; text-align: center;">
-                                &copy; 2024 MarkRemoverAI. All rights reserved.
+                                &copy; 2026 MarkRemoverAI. All rights reserved.
                             </p>
                         </td>
                     </tr>

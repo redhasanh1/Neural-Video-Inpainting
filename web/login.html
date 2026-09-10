@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign In - MarkRemoverAI</title>
     <link rel="canonical" href="https://markremoverai.com/login">
-    <meta name="description" content="Sign in to MarkRemoverAI or create a free account. Get 2 free credits to start removing objects from videos with AI.">
+    <meta name="description" content="Sign in to your MarkRemoverAI account or create a free account to remove objects, people, and logos from videos using our AI-powered online video editor.">
+    <meta name="robots" content="noindex, follow">
     <!-- Google AdSense -->
     <script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=ca-pub-5993103018552371"
      crossorigin="anonymous"></script>
@@ -289,16 +290,18 @@
         .tab-group {
             display: grid;
             grid-template-columns: repeat(2, 1fr);
-            background: rgba(26, 26, 46, 0.6);
-            border: 1px solid rgba(102, 126, 234, 0.25);
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
             border-radius: 12px;
             margin-bottom: 1.5rem;
+            padding: 4px;
+            gap: 4px;
         }
         .tab-button {
-            padding: 0.85rem 1rem;
+            padding: 0.7rem 1rem;
             border: none;
             background: transparent;
-            color: #a0a0c0;
+            color: var(--text-secondary);
             font-weight: 600;
             cursor: pointer;
             border-radius: 12px;
@@ -335,7 +338,7 @@
             -webkit-text-fill-color: transparent;
         }
         .card p {
-            color: #a0a0c0;
+            color: var(--text-secondary);
             margin-bottom: 1.5rem;
             line-height: 1.5;
         }
@@ -350,18 +353,18 @@
         .alert.success {
             background: rgba(16, 185, 129, 0.12);
             border: 1px solid rgba(16, 185, 129, 0.4);
-            color: #6ee7b7;
+            color: #10b981;
         }
         .alert.error {
             background: rgba(239, 68, 68, 0.12);
             border: 1px solid rgba(239, 68, 68, 0.4);
-            color: #fca5a5;
+            color: #ef4444;
         }
         label {
             display: block;
             font-weight: 600;
             margin-bottom: 0.5rem;
-            color: #c7c7f1;
+            color: var(--text-primary);
         }
         input[type="email"],
         input[type="password"],
@@ -369,14 +372,23 @@
             width: 100%;
             padding: 0.9rem 1rem;
             border-radius: 10px;
-            border: 1px solid rgba(102, 126, 234, 0.35);
-            background: rgba(15, 15, 30, 0.85);
-            color: #fff;
+            border: 1px solid var(--border-color);
+            background: var(--bg-primary);
+            color: var(--text-primary);
             font-size: 0.95rem;
             margin-bottom: 1.25rem;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease, background-color 0.3s ease;
+        }
+        input[type="email"]:focus,
+        input[type="password"]:focus,
+        input[type="text"]:focus {
+            outline: none;
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.18);
         }
         input::placeholder {
-            color: #7070a0;
+            color: var(--text-secondary);
+            opacity: 0.7;
         }
         .btn {
             display: inline-flex;
@@ -441,7 +453,7 @@
         <div class="card">
         <!-- Free Credits Banner -->
         <div style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.15) 0%, rgba(240, 147, 251, 0.15) 100%); border: 2px solid rgba(102, 126, 234, 0.3); border-radius: 12px; padding: 1.5rem; margin-bottom: 1.5rem; text-align: center;">
-            <p style="font-size: 1.3rem; font-weight: 700; margin: 0; background: linear-gradient(135deg, #667eea 0%, #f093fb 30%, #f6ad55 60%, #48bb78 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
+            <p style="font-size: 1.3rem; font-weight: 700; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
                 🎁 Get 2 FREE Credits When You Sign Up!
             </p>
             <p style="font-size: 0.95rem; color: var(--text-secondary); margin: 0.5rem 0 0; font-weight: 500;">
@@ -460,7 +472,7 @@
 
         <div id="panel-signin" class="tab-panel active" role="tabpanel" aria-labelledby="tab-signin">
             <button type="button" id="googleSignIn" class="btn google-btn">
-                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="" aria-hidden="true">
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google">
                 Continue with Google
             </button>
             <form id="loginForm">
@@ -470,7 +482,7 @@
                 <label for="password">Password</label>
                 <input type="password" id="password" name="password" placeholder="••••••••" autocomplete="current-password" required>
 
-                <div style="text-align: right; margin-top: 0.5rem;">
+                <div style="text-align: right; margin: -0.5rem 0 1.25rem;">
                     <a href="reset-password" style="color: var(--primary); text-decoration: none; font-size: 0.9rem; font-weight: 600;">Forgot your password?</a>
                 </div>
 
@@ -480,7 +492,7 @@
 
         <div id="panel-signup" class="tab-panel" role="tabpanel" aria-labelledby="tab-signup" hidden>
             <button type="button" id="googleSignup" class="btn google-btn">
-                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="" aria-hidden="true">
+                <img src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" alt="Google">
                 Continue with Google
             </button>
             <form id="signupForm">
@@ -763,7 +775,7 @@
                             <polyline points="22,6 12,13 2,6"></polyline>
                         </svg>
                     </div>
-                    <h1 style="margin-bottom: 0.75rem;">Check Your Email</h1>
+                    <h2 style="margin-bottom: 0.75rem;">Check Your Email</h2>
                     <p style="color: var(--text-secondary); margin-bottom: 1rem;">
                         We've sent a verification link to:<br>
                         <strong style="color: var(--primary);">${email}</strong>

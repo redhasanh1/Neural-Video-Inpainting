@@ -1,4 +1,4 @@
-﻿
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -11,9 +11,8 @@
 
     <!-- SEO Optimization -->
     <title>Remove Objects from Video Online Free - AI Inpainting Tool</title>
-    <meta name="description" content="Remove objects from video online free with AI. Erase people, text, logos from videos instantly. 8K support, no watermark, professional results.">
-    <meta name="keywords" content="remove object from video, video object remover, AI video object removal, remove person from video, erase object from video, video inpainting tool, AI video editor free, remove unwanted objects from video, delete objects from video, video cleanup tool, best video object remover 2025, professional video object removal, video object eraser online, 8K video object removal, 4K video object removal, free video editor online, one click object removal, AI video editing, youtube video editing, tiktok video editing, instagram reels editing, drone footage cleanup, real estate video editing, product video editing, social media video editing, film restoration, clean up video footage">
-    <meta name="author" content="MarkRemoverAI">
+    <meta name="description" content="Remove objects from video online free with AI. Erase people, text, logos from videos instantly. 8K support, no added branding, professional results in seconds.">
+<meta name="author" content="MarkRemoverAI">
     <meta name="theme-color" content="#0b1120">
     <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1, max-video-preview:-1">
     <link rel="canonical" href="https://markremoverai.com/">
@@ -94,6 +93,38 @@
                 "acceptedAnswer": {
                     "@type": "Answer",
                     "text": "Yes! All processed videos can be used for personal and commercial projects. You own full rights to your output files."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Is MarkRemoverAI free to use?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "We offer a free tier so you can test the tool on short clips. Longer videos, higher resolutions, and batch processing require credits, which can be purchased from your profile or the premium page."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Do I need to install any software?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "No. MarkRemoverAI runs entirely in your web browser. Upload your video, mark the object, and download the result. All processing happens on our secure servers."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "What is the best way to get clean results?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "For best results, use steady footage with good lighting, mark the entire object including any shadows or reflections, and avoid objects that are heavily occluded for long periods. You can preview the result and adjust the mask before final processing."
+                }
+            },
+            {
+                "@type": "Question",
+                "name": "Is my video data kept private?",
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": "Yes. Uploaded videos and processed results are tied to your account and are not used to train third-party models. We delete temporary files according to our data retention schedule, which is described in our privacy policy."
                 }
             }
         ]
@@ -1520,9 +1551,9 @@
                 <ul class="nav-menu" id="navMenu">
                     <li class="mobile-profile-item" style="display: none;"><a href="profile" id="mobileUserName" style="color: var(--primary); font-weight: 700;"></a></li>
                     <li class="mobile-profile-item" style="display: none;"><span id="mobileUserCredits" style="color: var(--text-secondary); font-weight: 600;"></span></li>
-                    <li><a href="backgroundremover">Background Remover</a></li>
+                    <li><a href="/backgroundremover">Background Remover</a></li>
                     <li><a href="premium#pricing">Pricing</a></li>
-                    <li><a href="contact">Contact</a></li>
+                    <li><a href="/contact">Contact</a></li>
                     <li class="mobile-only-menu-item"><button id="mobileThemeToggle" onclick="toggleTheme()" style="background: var(--gradient-primary); border: none; border-radius: 8px; padding: 0.6rem 1.2rem; color: white; font-weight: 600; cursor: pointer; width: 100%;"><span id="mobileThemeIcon">Toggle Theme</span></button></li>
                     <li id="mobileSignInItem" style="display: none;"><a href="login" style="color: var(--primary); font-weight: 600;">Sign In</a></li>
                 </ul>
@@ -1635,10 +1666,17 @@
                             <!-- Theater Mode Video Player - Direct canvas overlay, no fullscreen needed -->
                             <div id="professionalPlayer" style="display: none; box-shadow: 0 10px 40px rgba(0,0,0,0.5);">
                                 <!-- Video + Canvas Container -->
-                                <div id="videoWrapper">
+                                <div id="videoWrapper" style="position: relative;">
                                     <video id="previewVideo" playsinline webkit-playsinline preload="metadata"></video>
                                     <canvas id="maskCanvas" style="display: none; pointer-events: none;"></canvas>
+                                    <!-- Loading overlay shown while the preview is being prepared/transcoded -->
+                                    <div id="previewLoading" style="display:none; position:absolute; inset:0; z-index:5; background:rgba(10,10,25,0.82); color:#fff; flex-direction:column; align-items:center; justify-content:center; gap:12px; border-radius:inherit;">
+                                        <div style="width:42px; height:42px; border:4px solid rgba(255,255,255,0.25); border-top-color:#667eea; border-radius:50%; animation:previewSpin 0.9s linear infinite;"></div>
+                                        <div id="previewLoadingText" style="font-weight:600; font-size:15px;">Preparing your video…</div>
+                                        <div id="previewLoadingSub" style="font-size:12px; color:rgba(255,255,255,0.72); text-align:center; padding:0 16px;">Converting to a playable format — this takes a few seconds</div>
+                                    </div>
                                 </div>
+                                <style>@keyframes previewSpin { to { transform: rotate(360deg); } }</style>
 
                                 <!-- External Scrubber Bar (beneath video) -->
                                 <div id="theaterControls">
@@ -1997,6 +2035,50 @@
                     <p>Yes! All processed videos can be used for personal and commercial projects. You own full rights to your output files.</p>
                 </div>
             </div>
+            <div class="faq-item">
+                <button class="faq-question">
+                    Is MarkRemoverAI free to use?
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 9l6 6 6-6"/>
+                    </svg>
+                </button>
+                <div class="faq-answer">
+                    <p>We offer a free tier so you can test the tool on short clips. Longer videos, higher resolutions, and batch processing require credits, which can be purchased from your profile or the premium page.</p>
+                </div>
+            </div>
+            <div class="faq-item">
+                <button class="faq-question">
+                    Do I need to install any software?
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 9l6 6 6-6"/>
+                    </svg>
+                </button>
+                <div class="faq-answer">
+                    <p>No. MarkRemoverAI runs entirely in your web browser. Upload your video, mark the object, and download the result. All processing happens on our secure servers.</p>
+                </div>
+            </div>
+            <div class="faq-item">
+                <button class="faq-question">
+                    What is the best way to get clean results?
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 9l6 6 6-6"/>
+                    </svg>
+                </button>
+                <div class="faq-answer">
+                    <p>For best results, use steady footage with good lighting, mark the entire object including any shadows or reflections, and avoid objects that are heavily occluded for long periods. You can preview the result and adjust the mask before final processing.</p>
+                </div>
+            </div>
+            <div class="faq-item">
+                <button class="faq-question">
+                    Is my video data kept private?
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M6 9l6 6 6-6"/>
+                    </svg>
+                </button>
+                <div class="faq-answer">
+                    <p>Yes. Uploaded videos and processed results are tied to your account and are not used to train third-party models. We delete temporary files according to our data retention schedule, which is described in our privacy policy.</p>
+                </div>
+            </div>
         </div>
     </section>
 
@@ -2006,10 +2088,10 @@
             MarkRemoverAI - Professional Video Object Removal
         </p>
         <p style="color: var(--text-secondary); font-size: 0.95rem;">
-            <a href="terms" style="color: var(--primary); text-decoration: none; margin: 0 0.75rem;">Terms</a> •
-            <a href="privacy" style="color: var(--primary); text-decoration: none; margin: 0 0.75rem;">Privacy</a> •
-            <a href="premium" style="color: var(--primary); text-decoration: none; margin: 0 0.75rem;">Pricing</a> •
-            <a href="contact" style="color: var(--primary); text-decoration: none; margin: 0 0.75rem;">Contact</a>
+            <a href="/terms" style="color: var(--primary); text-decoration: none; margin: 0 0.75rem;">Terms</a> •
+            <a href="/privacy" style="color: var(--primary); text-decoration: none; margin: 0 0.75rem;">Privacy</a> •
+            <a href="/premium" style="color: var(--primary); text-decoration: none; margin: 0 0.75rem;">Pricing</a> •
+            <a href="/contact" style="color: var(--primary); text-decoration: none; margin: 0 0.75rem;">Contact</a>
         </p>
         <p style="color: var(--text-secondary); font-size: 0.9rem; margin-top: 1rem;">
             Contact: <a href="mailto:support@markremoverai.com" style="color: var(--primary); text-decoration: none;">support@markremoverai.com</a>
@@ -2134,13 +2216,29 @@
             }
         }
 
-        // Poll for HEVC transcode preview (iPhone videos)
-        // Server transcodes HEVC to H.264 for browser compatibility
+        // Loading overlay over the preview player (shown while transcoding / fetching the preview)
+        function showPreviewLoading(text, sub) {
+            const w = document.getElementById('videoWrapper');
+            if (w) w.style.position = 'relative';
+            const el = document.getElementById('previewLoading');
+            if (!el) return;
+            el.style.display = 'flex';
+            if (text !== undefined) { const t = document.getElementById('previewLoadingText'); if (t) t.textContent = text; }
+            if (sub !== undefined) { const s = document.getElementById('previewLoadingSub'); if (s) s.textContent = sub; }
+        }
+        function hidePreviewLoading() {
+            const el = document.getElementById('previewLoading');
+            if (el) el.style.display = 'none';
+        }
+
+        // Poll for transcode preview (mpeg4/hevc/wmv show black otherwise)
+        // Server transcodes to H.264 for browser compatibility
         async function pollForPreview(taskId, videoElem) {
             const maxAttempts = 30; // 30 seconds max wait
             let attempts = 0;
 
             console.log('[HEVC] Starting preview poll for task:', taskId);
+            showPreviewLoading('Preparing your video…', 'Getting your preview ready…');
 
             const poll = async () => {
                 try {
@@ -2150,31 +2248,51 @@
                     console.log('[HEVC] Preview status:', data);
 
                     if (data.status === 'ready' && data.url) {
-                        // Preview ready! But DON'T change src if using local blob
-                        // (CDN URLs cause tainted canvas - breaks SAM2 selector toDataURL)
-                        if (videoElem._localBlobUrl) {
-                            if (data.transcoded) {
-                                console.log('[HEVC] Transcoded ready but keeping local blob for canvas compatibility');
-                            } else {
-                                console.log('[HEVC] Original video OK, using local blob');
-                            }
+                        // The local blob keeps the SAM2 selector's canvas untainted, but it is the
+                        // RAW upload — for mpeg4/hevc/wmv that file is unrenderable (0x0, black player).
+                        // transcoded:true means the server produced a browser-playable H.264, so we
+                        // MUST switch to it. The CDN sends Access-Control-Allow-Origin:*, so setting
+                        // crossOrigin='anonymous' keeps toDataURL() working on the cross-origin video.
+                        if (videoElem._localBlobUrl && !data.transcoded) {
+                            console.log('[HEVC] Original already browser-playable, keeping local blob');
+                            hidePreviewLoading();
                         } else {
-                            // Fallback: no local blob, use CDN URL
+                            // The raw local blob is unrenderable for mpeg4/hevc/wmv (0x0, black), and the
+                            // CDN has no Range support so its URL can't be scrubbed. Fetch the transcoded
+                            // H.264 into a same-origin blob: it renders, stays seekable (in-memory), and
+                            // keeps the selector's canvas untainted (no crossOrigin needed).
                             const currentTime = videoElem.currentTime;
                             const wasPaused = videoElem.paused;
-
-                            videoElem.src = data.url;
-
-                            // Restore playback position
-                            videoElem.onloadedmetadata = () => {
-                                videoElem.currentTime = currentTime;
-                                if (!wasPaused) videoElem.play();
-                            };
-
-                            if (data.transcoded) {
-                                console.log('[HEVC] Transcoded H.264 preview loaded!');
-                            } else {
-                                console.log('[HEVC] Using original video (not HEVC)');
+                            const oldBlob = (videoElem.src && videoElem.src.startsWith('blob:')) ? videoElem.src : null;
+                            showPreviewLoading('Loading preview…', 'Almost there');
+                            try {
+                                const resp = await fetch(data.url);   // CDN sends Access-Control-Allow-Origin:*
+                                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                                const blobUrl = URL.createObjectURL(await resp.blob());
+                                videoElem.removeAttribute('crossorigin');
+                                videoElem.crossOrigin = null;
+                                videoElem.src = blobUrl;
+                                videoElem._localBlobUrl = true;   // H.264 blob: renderable + seekable + untainted
+                                videoElem.onloadedmetadata = () => {
+                                    videoElem.currentTime = currentTime;
+                                    if (!wasPaused) videoElem.play();
+                                    window.dispatchEvent(new Event('resize'));  // selector re-reads real dimensions
+                                    hidePreviewLoading();
+                                    if (oldBlob) URL.revokeObjectURL(oldBlob);
+                                };
+                                console.log('[HEVC] Loaded transcoded H.264 as seekable blob');
+                            } catch (err) {
+                                // Fallback: play the CDN URL directly (renders + toDataURL via CORS; seeking limited)
+                                console.warn('[HEVC] Blob fetch failed, using CDN URL directly:', err);
+                                videoElem.crossOrigin = 'anonymous';
+                                videoElem.src = data.url;
+                                videoElem._localBlobUrl = false;
+                                videoElem.onloadedmetadata = () => {
+                                    videoElem.currentTime = currentTime;
+                                    if (!wasPaused) videoElem.play();
+                                    window.dispatchEvent(new Event('resize'));
+                                    hidePreviewLoading();
+                                };
                             }
                         }
                         return; // Done polling
@@ -2182,17 +2300,20 @@
 
                     if (data.status === 'processing') {
                         // Still transcoding, continue polling
+                        showPreviewLoading('Converting your video…', 'Optimizing for playback (' + (attempts + 1) + 's)…');
                         attempts++;
                         if (attempts < maxAttempts) {
                             setTimeout(poll, 1000);
                         } else {
                             console.log('[HEVC] Max poll attempts reached, keeping original');
+                            hidePreviewLoading();
                         }
                         return;
                     }
 
                     // status is 'not_found' or error - stop polling
                     console.log('[HEVC] Preview not available, using original');
+                    hidePreviewLoading();
 
                 } catch (err) {
                     console.error('[HEVC] Poll error:', err);
@@ -2200,6 +2321,8 @@
                     attempts++;
                     if (attempts < maxAttempts) {
                         setTimeout(poll, 1000);
+                    } else {
+                        hidePreviewLoading();
                     }
                 }
             };
@@ -2234,6 +2357,11 @@
                     document.getElementById('professionalPlayer').style.display = 'block';
                     previewImage.style.display = 'none';
 
+                    // Show the loading overlay IMMEDIATELY so the player never flashes black
+                    // while the raw file loads / uploads / transcodes. pollForPreview updates and
+                    // hides it once the real (or transcoded) video is ready.
+                    showPreviewLoading('Preparing your video…', 'Getting things ready…');
+
                     // Initialize professional video controls
                     initProfessionalPlayer(videoElem);
                     // Calculate credit cost based on video specs
@@ -2248,6 +2376,7 @@
                             if (duration > MAX_DURATION_SECONDS) {
                                 alert(`Video too long! Maximum duration is 1 minute 30 seconds.\n\nYour video: ${Math.round(duration)} seconds\n\nPlease upload a shorter video.`);
                                 // Reset the upload
+                                hidePreviewLoading();
                                 previewContainer.classList.remove('active');
                                 videoElem.src = '';
                                 if (fileInput) fileInput.value = '';
@@ -2367,8 +2496,10 @@
 
                 // Use LOCAL blob URL for video preview (prevents tainted canvas from CDN cross-origin)
                 // This allows SAM2 selector to capture frames with toDataURL()
+                videoElem.removeAttribute('crossorigin');  // blob is same-origin; clear any CORS mode left by a prior H.264 preview
+                videoElem.crossOrigin = null;
                 videoElem.src = URL.createObjectURL(file);
-                videoElem._localBlobUrl = true;  // Flag to prevent pollForPreview from changing src
+                videoElem._localBlobUrl = true;  // pollForPreview keeps this ONLY if the original is already browser-playable
 
                 // Initialize professional timeline for videos
                 if (file.type.startsWith('video/')) {
@@ -3204,7 +3335,7 @@
 
     <!-- SAM2 Timeline and Selection Scripts -->
     
-    <script src="js/sam2_selector.js?v=7"></script>
+    <script src="js/sam2_selector.js?v=8"></script>
     <!-- MaskDrawer INLINED to bypass Cloudflare Worker routing issue -->
     <script>
 /**
@@ -4790,17 +4921,21 @@ document.querySelectorAll('.faq-question').forEach(btn => {
     });
 });
 </script>
+
+<!-- sitewide-nav: every page links to every other page, so none of them are
+     orphans. Google will not re-crawl a URL nothing links to. -->
+
+
+    <nav aria-label="Site" data-sitewide-nav style="background:#0f172a;padding:2.5rem 1.5rem 1.5rem;border-top:1px solid rgba(148,163,184,.2)">
+  <div style="max-width:1100px;margin:0 auto;display:flex;flex-wrap:wrap;justify-content:flex-start">
+    <div style="min-width:150px;margin:0 2rem 1.5rem 0"><h2 style="color:#f8fafc;font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;margin:0 0 .85rem;font-weight:700">Tools</h2><ul style="list-style:none;padding:0;margin:0"><li style="margin:0 0 .5rem"><a href="/" style="color:#c7d2fe;text-decoration:none;font-size:.95rem">Video object remover</a></li><li style="margin:0 0 .5rem"><a href="/backgroundremover" style="color:#c7d2fe;text-decoration:none;font-size:.95rem">Background remover</a></li><li style="margin:0 0 .5rem"><a href="/video-tools" style="color:#c7d2fe;text-decoration:none;font-size:.95rem">Video tools</a></li></ul></div>
+    <div style="min-width:150px;margin:0 2rem 1.5rem 0"><h2 style="color:#f8fafc;font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;margin:0 0 .85rem;font-weight:700">Product</h2><ul style="list-style:none;padding:0;margin:0"><li style="margin:0 0 .5rem"><a href="/premium" style="color:#c7d2fe;text-decoration:none;font-size:.95rem">Pricing</a></li></ul></div>
+    <div style="min-width:150px;margin:0 2rem 1.5rem 0"><h2 style="color:#f8fafc;font-size:.8rem;letter-spacing:.08em;text-transform:uppercase;margin:0 0 .85rem;font-weight:700">Company</h2><ul style="list-style:none;padding:0;margin:0"><li style="margin:0 0 .5rem"><a href="/contact" style="color:#c7d2fe;text-decoration:none;font-size:.95rem">Contact</a></li><li style="margin:0 0 .5rem"><a href="/terms" style="color:#c7d2fe;text-decoration:none;font-size:.95rem">Terms</a></li><li style="margin:0 0 .5rem"><a href="/privacy" style="color:#c7d2fe;text-decoration:none;font-size:.95rem">Privacy</a></li></ul></div>
+  </div>
+  <p style="max-width:1100px;margin:1rem auto 0;color:#94a3b8;font-size:.85rem">MarkRemoverAI &mdash; remove unwanted objects from video with AI.</p>
+</nav>
+  <script type="application/ld+json">{"@context": "https://schema.org", "@type": "Organization", "name": "MarkRemoverAI", "url": "https://markremoverai.com", "logo": "https://markremoverai.com/logo.svg", "description": "MarkRemoverAI removes unwanted objects from video using AI, reconstructing the background behind them frame by frame.", "contactPoint": {"@type": "ContactPoint", "contactType": "customer support", "email": "support@markremoverai.com", "availableLanguage": "English"}}</script>
 </body>
 </html>
-
-
-
-
-
-
-
-
-
-
 
 

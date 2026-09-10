@@ -306,14 +306,49 @@ class SAM2Selector {
                 return mask;
             } else {
                 console.error('[SAM2Selector] Failed to get mask:', data.message);
+                // A cold GPU answers late. Retry once before telling the user
+                // anything, because the second attempt usually lands.
+                if (data.status === 'busy' && !this._retried) {
+                    this._retried = true;
+                    this.notify('Warming up the GPU, one moment...');
+                    await new Promise(function (r) { setTimeout(r, 6000); });
+                    this.isLoading = false;
+                    const again = await this.requestMask(points);
+                    this._retried = false;
+                    if (again) { this.notify(''); return again; }
+                }
+                this.notify(data.message || 'Could not read that selection. Tap the object again.');
                 return null;
             }
         } catch (error) {
             console.error('[SAM2Selector] Mask request failed:', error);
+            this.notify('Lost connection. Check your network and tap again.');
             return null;
         } finally {
             this.isLoading = false;
         }
+    }
+
+    /**
+     * Put a short status message on screen. Silent failure is what made a
+     * tap look like it did nothing at all.
+     */
+    notify(text) {
+        try {
+            var el = document.getElementById('sam2StatusMessage');
+            if (!el) {
+                el = document.createElement('div');
+                el.id = 'sam2StatusMessage';
+                el.setAttribute('role', 'status');
+                el.style.cssText = 'margin:.6rem 0;padding:.6rem .9rem;border-radius:10px;' +
+                    'background:rgba(102,126,234,.12);border:1px solid rgba(102,126,234,.3);' +
+                    'color:#c7d2fe;font-size:.95rem;text-align:center;';
+                var host = (this.canvas && this.canvas.parentNode) || document.body;
+                host.appendChild(el);
+            }
+            el.textContent = text || '';
+            el.style.display = text ? 'block' : 'none';
+        } catch (e) { /* never let a status line break selection */ }
     }
 
     /**

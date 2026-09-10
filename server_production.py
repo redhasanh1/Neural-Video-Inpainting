@@ -341,6 +341,11 @@ print("[DEBUG] FFmpeg init complete, creating Flask app...", flush=True)
 # [HEVC] Async transcode executor (non-blocking)
 hevc_transcode_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="HEVCTranscode")
 
+# Codecs a browser will actually play in a <video> element. Anything outside
+# this set has to be transcoded, not just HEVC - mpeg4, wmv and mpeg2 are all
+# "not HEVC" and all unplayable, which is what made uploads show a blank player.
+BROWSER_SAFE_CODECS = {'h264', 'avc1', 'vp8', 'vp9', 'av1', 'av01'}
+
 # [HEVC] Transcode HEVC to H.264 for browser preview
 def check_video_codec(video_path):
     """Check if video is HEVC/H.265 codec using ffprobe"""
@@ -377,11 +382,20 @@ def transcode_hevc_to_h264(input_path, output_path):
                 output_path
             ]
         else:
+            # CPU encode, so speed matters more than fidelity. This file is only
+            # ever the editor preview - the person watches it and taps the object
+            # they want gone - while the render still runs on the original at full
+            # resolution. Capping the preview at 720p on a fast preset turns a
+            # minute of encoding into a few seconds, which is the difference
+            # between someone waiting and someone leaving.
             cmd = [
                 FFMPEG_EXE, '-y', '-i', input_path,
-                '-c:v', 'libx264', '-preset', 'fast', '-crf', '23',
-                '-c:a', 'aac', '-b:a', '128k',
+                '-vf', "scale='min(1280,iw)':'min(1280,ih)'"
+                       ":force_original_aspect_ratio=decrease:force_divisible_by=2",
+                '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '28',
+                '-c:a', 'aac', '-b:a', '96k',
                 '-movflags', '+faststart',
+                '-threads', '0',
                 output_path
             ]
         print(f"[HEVC] Transcoding to H.264: {input_path}")
@@ -452,18 +466,18 @@ def transcode_hevc_pipeline(video_url, task_id):
             except:
                 pass
 
-            if codec and codec not in ['hevc', 'h265', 'hev1']:
-                # Not HEVC - no transcode needed, skip full download!
+            if codec and codec in BROWSER_SAFE_CODECS:
+                # Browser can play this as-is - skip the full download.
                 redis_client.setex(f"preview_status:{task_id}", 86400, "original")
                 redis_client.setex(f"preview_url:{task_id}", 86400, video_url)
-                print(f"[HEVC] Not HEVC ({codec}), skipping download - saved bandwidth!")
+                print(f"[PREVIEW] {codec} plays in-browser, skipping download - saved bandwidth!")
                 return video_url
         else:
             codec = None
 
         # 3. HEVC detected (or couldn't check) - download full file
         temp_input = os.path.join(TEMP_DIR, f"{uuid.uuid4()}_input.mp4")
-        print(f"[HEVC] HEVC detected, downloading full video to {temp_input}")
+        print(f"[PREVIEW] {codec or 'unknown codec'} needs transcoding, downloading full video to {temp_input}")
 
         response = requests.get(video_url, stream=True, timeout=120)
         response.raise_for_status()
@@ -480,11 +494,11 @@ def transcode_hevc_pipeline(video_url, task_id):
             codec = check_video_codec(temp_input)
             print(f"[HEVC] Verified codec: {codec}")
 
-            if codec not in ['hevc', 'h265', 'hev1']:
-                # Not HEVC after all
+            if codec in BROWSER_SAFE_CODECS:
+                # Playable after all - no transcode needed
                 redis_client.setex(f"preview_status:{task_id}", 86400, "original")
                 redis_client.setex(f"preview_url:{task_id}", 86400, video_url)
-                print(f"[HEVC] Not HEVC ({codec}), using original URL")
+                print(f"[PREVIEW] {codec} plays in-browser, using original URL")
                 return video_url
 
         # 3. Transcode HEVC -> H.264
@@ -712,7 +726,14 @@ def require_credits(min_credits=1):
                             'error': 'Insufficient credits',
                             'required': min_credits,
                             'available': credits,
-                            'message': f'You need {min_credits} credit(s) but only have {credits}. Please purchase more credits.'
+                            # The app has nothing to sell, so it must never be
+                            # told to go buy something. The website still gets
+                            # the wording that points at its own pricing.
+                            'message': (
+                                f"That's today's free videos used up. Two more tomorrow."
+                                if _is_app_client() else
+                                f'You need {min_credits} credit(s) but only have {credits}. Please purchase more credits.'
+                            )
                         }), 402  # Payment Required
             except Exception as e:
                 print(f"[ERROR] Credit check failed: {e}")
@@ -760,7 +781,12 @@ def deduct_credit_on_completion(task_id):
                 )
                 deduct_result = cur.fetchone()
                 if deduct_result:
-                    new_balance = deduct_result[0]
+                    # float(), not the raw Decimal. jsonify renders Decimal as
+                    # a JSON *string* ("1.00"), and clients that type this as a
+                    # number fail to decode the whole response - which happens
+                    # only on the reply that reports completion, so a finished
+                    # job looks like it is still running.
+                    new_balance = float(deduct_result[0])
                     print(f"[CREDITS] Deducted {credits_to_deduct} credit(s) for user {user_id} on task {task_id}. New balance: {new_balance}")
                     return new_balance
                 else:
@@ -773,10 +799,106 @@ def deduct_credit_on_completion(task_id):
                 cur = conn.cursor()
                 cur.execute('SELECT credits FROM users WHERE id = %s', (user_id,))
                 result = cur.fetchone()
-                return result[0] if result else None
+                return float(result[0]) if result else None
 
     except Exception as e:
         print(f"[CREDITS] Error during deduction: {e}")
+        return None
+
+
+# ----------------------------------------------------------------------------
+# Daily free tier (iOS app)
+# ----------------------------------------------------------------------------
+# The App Store build ships with no in-app purchases while the Paid Apps
+# agreement is still pending, so app users get an allowance instead: a top-up
+# to DAILY_FREE_CREDITS once per calendar day (server time, UTC on Railway).
+#
+# Deliberately a top-up *to* the cap rather than an addition, which is what
+# stops it accumulating - going away for a week still leaves you with 2, not
+# 14. The same rule is why a balance already above the cap is left completely
+# alone: someone who bought a pack on the website keeps and spends what they
+# paid for, and only drops back onto the free tier once it runs out.
+#
+# Granted to the app only. The website sells these same credits, so handing
+# them out there would undercut it.
+
+DAILY_FREE_CREDITS = float(os.getenv('DAILY_FREE_CREDITS', '2'))
+APP_CLIENT_HEADER = 'X-Client'
+APP_CLIENT_VALUE = 'objectremoverai-ios'
+
+
+def _is_app_client():
+    """True when the request came from the iOS app rather than the website."""
+    try:
+        return request.headers.get(APP_CLIENT_HEADER, '').strip().lower() == APP_CLIENT_VALUE
+    except Exception:
+        # No request context (startup, Celery). Not the app, so no grant.
+        return False
+
+
+def _ensure_daily_credit_table(cur):
+    """One row per user recording the last day their allowance was claimed."""
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS app_daily_credits (
+            user_id    INTEGER PRIMARY KEY,
+            grant_date DATE NOT NULL,
+            granted    NUMERIC NOT NULL DEFAULT 0,
+            updated_at TIMESTAMP DEFAULT NOW()
+        )
+    """)
+
+
+def grant_daily_free_credits(cur, user_id):
+    """Tops an app user up to the daily allowance.
+
+    Returns the new balance, or None when nothing was granted (not the app,
+    already claimed today, or already holding more than the cap).
+
+    Claiming the day happens first and atomically: the balance UPDATE only runs
+    for the request that actually moved grant_date forward, so two launches at
+    the same moment cannot both pay out.
+    """
+    if not _is_app_client():
+        return None
+
+    try:
+        _ensure_daily_credit_table(cur)
+
+        cur.execute("""
+            INSERT INTO app_daily_credits (user_id, grant_date, granted)
+            VALUES (%s, CURRENT_DATE, 0)
+            ON CONFLICT (user_id) DO UPDATE
+                SET grant_date = CURRENT_DATE, updated_at = NOW()
+                WHERE app_daily_credits.grant_date < CURRENT_DATE
+            RETURNING user_id
+        """, (user_id,))
+
+        if not cur.fetchone():
+            return None  # someone already claimed today for this user
+
+        # Top up TO the cap, never past it. The `credits <` guard is the whole
+        # reason a web purchase is safe here - without it this would reset a
+        # 60-credit balance down to 2.
+        cur.execute(
+            'UPDATE users SET credits = %s WHERE id = %s AND credits < %s RETURNING credits',
+            (DAILY_FREE_CREDITS, user_id, DAILY_FREE_CREDITS)
+        )
+        row = cur.fetchone()
+        if not row:
+            print(f"[FREE-TIER] User {user_id} already above the cap, nothing granted")
+            return None
+
+        new_balance = float(row[0])
+        cur.execute(
+            'UPDATE app_daily_credits SET granted = %s WHERE user_id = %s',
+            (new_balance, user_id)
+        )
+        print(f"[FREE-TIER] User {user_id} topped up to {new_balance} for today")
+        return new_balance
+
+    except Exception as exc:
+        # A failed grant must never block sign-in.
+        print(f"[FREE-TIER] Grant failed for user {user_id}: {exc}")
         return None
 
 
@@ -1034,13 +1156,18 @@ def auth_google_callback():
                 if user:
                     # Link Google account to existing email user
                     user_id, credits = user
-                    cur.execute('UPDATE users SET google_id = %s, name = %s WHERE id = %s', (google_id, name, user_id))
+                    # COALESCE-style guard: a later sign-in that carries no name
+                    # must not blank out the one already stored.
+                    cur.execute(
+                        'UPDATE users SET google_id = %s, name = COALESCE(NULLIF(%s, %s), name) WHERE id = %s',
+                        (google_id, _display_name(name, email) if name else '', '', user_id)
+                    )
                     print(f"[AUTH] Linked Google account to existing user: {email}")
                 else:
                     # New user - give 2 free credits
                     cur.execute(
                         'INSERT INTO users (google_id, email, name, credits) VALUES (%s, %s, %s, %s) RETURNING id',
-                        (google_id, email, name, 2)
+                        (google_id, email, _display_name(name, email), 2)
                     )
                     user_id = cur.fetchone()[0]
                     credits = 2
@@ -1207,6 +1334,12 @@ def auth_login():
             session['name'] = name
             session.permanent = True
 
+            # The app trusts this response and does not re-fetch, so the
+            # allowance has to be applied before the balance is reported.
+            granted = grant_daily_free_credits(cur, user_id)
+            if granted is not None:
+                credits = granted
+
             print(f"[AUTH] User logged in: {email}")
 
             return jsonify({
@@ -1232,7 +1365,7 @@ def auth_verify():
     token = request.args.get('token', '')
 
     if not token:
-        return redirect('/login.html?error=missing_token')
+        return redirect('/login?error=missing_token')
 
     try:
         with get_db() as conn:
@@ -1247,14 +1380,14 @@ def auth_verify():
 
             if not user:
                 print(f"[AUTH] Invalid verification token attempted")
-                return redirect('/login.html?error=invalid_token')
+                return redirect('/login?error=invalid_token')
 
             user_id, email, token_expires = user
 
             # Check if token has expired
             if token_expires and datetime.utcnow() > token_expires:
                 print(f"[AUTH] Expired verification token for {email}")
-                return redirect('/login.html?error=token_expired')
+                return redirect('/login?error=token_expired')
 
             # Mark email as verified and clear the token
             cur.execute(
@@ -1276,7 +1409,7 @@ def auth_verify():
 
     except Exception as e:
         print(f"[ERROR] Email verification failed: {e}")
-        return redirect('/login.html?error=verification_failed')
+        return redirect('/login?error=verification_failed')
 
 
 @app.route('/api/auth/resend-verification', methods=['POST', 'OPTIONS'])
@@ -1288,16 +1421,17 @@ def auth_resend_verification():
     if not AUTH_ENABLED:
         return jsonify({'error': 'Authentication not enabled'}), 503
 
-    # Support both logged-in users and users who can't log in due to unverified email
-    user_id = session.get('user_id')
-    email_from_request = None
+    # Support both logged-in users and users who can't log in due to unverified
+    # email. An address in the body wins over the session: someone signed in on
+    # one account and trying to verify a second one was being answered about
+    # the account they were signed into, which reported "already verified"
+    # while the account they actually named stayed unverified and locked out.
+    data = request.get_json(silent=True) or {}
+    email_from_request = (data.get('email') or '').strip().lower()
+    user_id = None if email_from_request else session.get('user_id')
 
-    if not user_id:
-        # Try to get email from request body (for users who can't log in)
-        data = request.get_json() or {}
-        email_from_request = data.get('email', '').strip().lower()
-        if not email_from_request:
-            return jsonify({'error': 'Email is required'}), 400
+    if not user_id and not email_from_request:
+        return jsonify({'error': 'Email is required'}), 400
 
     try:
         with get_db() as conn:
@@ -1372,6 +1506,9 @@ def auth_status():
         # Get current user data from database
         with get_db() as conn:
             cur = conn.cursor()
+            # Before reading the balance, not after: the app calls this on every
+            # launch, so this is what actually hands out the daily allowance.
+            grant_daily_free_credits(cur, user_id)
             cur.execute('SELECT email, name, credits, email_verified, created_at FROM users WHERE id = %s', (user_id,))
             user = cur.fetchone()
 
@@ -1387,9 +1524,7 @@ def auth_status():
                     'id': user_id,
                     'email': email,
                     'name': name,
-                    # float(), not the raw Decimal: Flask serialises Decimal as
-                    # a JSON string, which clients then read as zero.
-                    'credits': float(credits or 0),
+                    'credits': credits,
                     'email_verified': email_verified or False,
                     'created_at': created_at.isoformat() if created_at else None
                 }
@@ -1508,7 +1643,11 @@ def forgot_password():
 
                 # Generate reset URL and send email
                 base_url = os.getenv('TUNNEL_URL', request.host_url.rstrip('/'))
-                reset_url = f"{base_url}/reset-password.html?token={token}"
+                # Must be the route, not the file name. /reset-password.html
+                # redirects to /reset-password and drops the query string with
+                # it, so the page loaded with no token and just showed the
+                # "request a reset" form again.
+                reset_url = f"{base_url}/reset-password?token={token}"
 
                 try:
                     send_reset_email(email, reset_url)
@@ -1572,10 +1711,19 @@ def reset_password():
             # Hash new password
             password_hash = bcrypt.hashpw(new_password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
 
-            # Update password
+            # Update password. Verifying the address here is the point: the
+            # token only ever reached them by email, so completing this flow is
+            # proof they control it. Without this, anyone who signed up but
+            # never clicked the original verification link resets their
+            # password successfully and is then still refused at login for
+            # being unverified, with no way out - the verification token has
+            # usually long expired by then.
             cur.execute('''
                 UPDATE users
-                SET password_hash = %s
+                SET password_hash = %s,
+                    email_verified = TRUE,
+                    verification_token = NULL,
+                    verification_token_expires = NULL
                 WHERE id = %s
             ''', (password_hash, reset_token[0]))
 
@@ -5506,8 +5654,15 @@ def backgroundremover_page():
 
 @app.route('/object-removal')
 def object_removal_page():
-    """Object removal tool - serves main index"""
-    return send_file('web/index.html')
+    """How-to guide for object removal.
+
+    This used to serve index.html, which made the URL a byte-for-byte duplicate
+    of the homepage: it canonicalised to / and Google never indexed it. The
+    homepage already targets the transactional query, so a second page chasing
+    the same words would only compete with it. This one answers the
+    informational query instead and links through to the tool.
+    """
+    return send_file('web/object-removal-guide.html')
 
 
 @app.route('/video-tools')
@@ -5524,7 +5679,6 @@ def video_tools_page():
 # ============================================================
 
 @app.route('/api/object-removal/get-upload-url', methods=['POST', 'OPTIONS'])
-@require_auth
 def objrem_get_upload_url():
     """Get presigned B2 upload URL for direct client upload (no Railway ingress)"""
     if request.method == 'OPTIONS':
@@ -5581,7 +5735,6 @@ def objrem_get_upload_url():
 
 
 @app.route('/api/object-removal/upload-complete', methods=['POST', 'OPTIONS'])
-@require_auth
 def objrem_upload_complete():
     """Client notifies B2 upload complete, provides video dimensions"""
     if request.method == 'OPTIONS':
@@ -5604,9 +5757,6 @@ def objrem_upload_complete():
         redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         redis_client.hset(f"objrem:{job_id}", mapping={
             'status': 'uploaded',
-            # Recorded here so export can bill the right account even if the
-            # session has rolled over by the time the render finishes.
-            'user_id': str(session.get('user_id') or ''),
             'cdn_url': cdn_url,
             'width': str(width),
             'height': str(height),
@@ -5665,7 +5815,6 @@ def objrem_video(job_id):
 
 
 @app.route('/api/object-removal/select', methods=['POST', 'OPTIONS'])
-@require_auth
 def objrem_select():
     """Store clicked point for SAM2 tracking"""
     if request.method == 'OPTIONS':
@@ -5712,7 +5861,6 @@ def objrem_select():
 
 
 @app.route('/api/object-removal/auto-detect', methods=['POST', 'OPTIONS'])
-@require_auth
 def objrem_auto_detect():
     """Use YOLO to detect objects in first frame - dispatches to wsl_yolo_local"""
     if request.method == 'OPTIONS':
@@ -5762,7 +5910,6 @@ def objrem_auto_detect():
 
 
 @app.route('/api/object-removal/track', methods=['POST', 'OPTIONS'])
-@require_auth
 def objrem_track():
     """Start full video tracking with SAM2 via wsl_sam2_local queue"""
     if request.method == 'OPTIONS':
@@ -5964,8 +6111,6 @@ def objrem_status(job_id):
 
 
 @app.route('/api/object-removal/export', methods=['POST', 'OPTIONS'])
-@require_auth
-@require_credits(min_credits=0.1)
 def objrem_export():
     """Apply simple effects (blur, greenscreen, color) and export video"""
     if request.method == 'OPTIONS':
@@ -7405,6 +7550,14 @@ def generate_sprite_sheet(video_url, task_id, thumb_width=160, thumb_height=90, 
     Returns:
         dict with sprite_path, vtt_path, duration, or None on error
     """
+    # The Railway web container ships without ffmpeg on purpose: the GPU workers
+    # do the video work. Without this guard the call below runs subprocess.run
+    # with FFPROBE_EXE as None and raises a TypeError on every single upload,
+    # which is what filled the logs with tracebacks. Scrubbing thumbnails are a
+    # nicety, so skip them quietly instead. Same shape as check_video_codec.
+    if not FFPROBE_EXE or not FFMPEG_EXE:
+        return None
+
     try:
         sprite_dir = os.path.join(CACHE_DIR, 'sprites', task_id)
         os.makedirs(sprite_dir, exist_ok=True)
@@ -8169,6 +8322,17 @@ def premium_page():
     return send_file(os.path.join(app.static_folder, 'premium.html'))
 
 
+# The API, API support and enterprise pages advertised a programmatic
+# offering that does not exist - no key issuance, no endpoints, no docs.
+# They were near-duplicates of each other and of /contact, so they now fold
+# into the contact page rather than standing alone as thin landing pages.
+@app.route('/api')
+@app.route('/api-support')
+@app.route('/enterprise')
+def business_enquiries_redirect():
+    return redirect('/contact', code=301)
+
+
 @app.route('/<path:filename>')
 def serve_static_files(filename):
     """Serve HTML and other static files from web folder"""
@@ -8191,6 +8355,17 @@ def serve_static_files(filename):
     if os.path.exists(html_path):
         return send_file(html_path)
 
+    # Source and working files sit in the same folder as the pages, so the
+    # fallback below was serving them to anyone who asked - and to crawlers.
+    # Only the few text files that have to be public are allowed through.
+    public_text_files = {'robots.txt', 'ads.txt', 'sitemap.xml'}
+    base = os.path.basename(filename).lower()
+    key_stem = base[:-4] if base.endswith('.txt') else ''
+    is_indexnow_key = len(key_stem) == 32 and all(c in '0123456789abcdef' for c in key_stem)
+    if (base.endswith(('.py', '.md', '.txt', '.yml', '.yaml', '.log', '.sh', '.bat'))
+            and base not in public_text_files and not is_indexnow_key):
+        return ('Not Found', 404)
+
     # Otherwise serve as static file (fallback)
     return send_from_directory(app.static_folder, filename)
 
@@ -8209,10 +8384,10 @@ def get_stats():
         }
     """
     try:
-        # Get Celery stats
-        from celery.task.control import inspect
-
-        i = inspect(app=celery)
+        # Get Celery stats. celery.task.control was dropped in Celery 4, so the
+        # old import raised on every call and this endpoint always fell through
+        # to the zeroed fallback below, which is why the queue always read 0.
+        i = celery.control.inspect()
         active = i.active()
         scheduled = i.scheduled()
         reserved = i.reserved()  # Tasks that are reserved but not yet started
@@ -8340,8 +8515,9 @@ def sam2_select_object():
         print(f"[SAM2] Request data: points={len(points)}, video={video_width}x{video_height}")
         redis_client.lpush('sam2:selection:request', json.dumps(request_data))
 
-        # Wait for response (timeout: 5 seconds)
-        timeout = 5.0
+        # Wait for response. A worker that has just come up needs longer than a
+        # warm one, and returning early here is what makes a click look ignored.
+        timeout = 20.0
         start_time = time.time()
 
         print(f"[SAM2] Waiting for response on: {response_channel}")
@@ -8366,8 +8542,8 @@ def sam2_select_object():
         pubsub.unsubscribe()
         pubsub.close()
         return jsonify({
-            'status': 'error',
-            'message': 'Local worker timeout - is SAM2 worker running?'
+            'status': 'busy',
+            'message': 'The GPU is still starting up. Wait a few seconds and tap again.'
         }), 504
 
     except Exception as e:
@@ -9037,8 +9213,40 @@ def _mint_native_auth_code(user_id):
         return None
 
 
+def _display_name(raw_name, email):
+    """A person's name, or a clean fallback - never an email hash.
+
+    Apple sends the name only on the very first authorization, and with Hide My
+    Email the address is a random string like k2j9x8mn4p@privaterelay.appleid.com.
+    Falling back to the part before the @ therefore printed that random string as
+    the user's name, which is what appeared on the profile screen.
+    """
+    name = " ".join((raw_name or "").split())
+    if name:
+        # First and last only. Apple can hand back a long chain of given,
+        # middle and family names, and the profile screen has one line.
+        parts = name.split()
+        return parts[0] if len(parts) == 1 else f"{parts[0]} {parts[-1]}"
+
+    local = (email or "").split("@")[0]
+    domain = (email or "").split("@")[-1].lower()
+    # A relay local-part carries no information about the person.
+    if not local or "privaterelay.appleid.com" in domain or not any(c.isalpha() for c in local):
+        return "There"
+    # someone.name / someone_name / someone.name123 -> Someone Name
+    cleaned = local.replace(".", " ").replace("_", " ").replace("-", " ")
+    words = [w for w in cleaned.split() if any(c.isalpha() for c in w)]
+    if not words:
+        return "There"
+    words = [w.capitalize() for w in words][:2]
+    return " ".join(words)
+
+
 def _session_for_user(cur, user_id):
     """Loads a user and installs them into the Flask session."""
+    # Covers the Google and Apple sign-in paths, which return the user object
+    # directly instead of going through /api/auth/status first.
+    grant_daily_free_credits(cur, user_id)
     cur.execute(
         'SELECT email, name, credits, email_verified, created_at FROM users WHERE id = %s',
         (user_id,)
@@ -9175,7 +9383,7 @@ def auth_apple():
                     cur.execute(
                         '''INSERT INTO users (apple_id, email, name, credits, email_verified)
                            VALUES (%s, %s, %s, %s, TRUE) RETURNING id''',
-                        (apple_id, email, name or email.split('@')[0], 2)
+                        (apple_id, email, _display_name(name, email), 2)
                     )
                     user_id = cur.fetchone()[0]
                     print(f"[APPLE-SIGNIN] New user {email} (2 free credits)")

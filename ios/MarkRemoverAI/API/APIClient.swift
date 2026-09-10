@@ -12,11 +12,11 @@ enum APIError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .http(_, let message): return message
-        case .transport: return "Can't reach ObjectRemoverAI. Check your connection."
+        case .transport: return "Can't reach MarkRemoverAI. Check your connection."
         case .decoding: return "The server sent something unexpected."
-        case .needsVerification(let email): return "Verify \(email) first. Check your inbox."
+        case .needsVerification(let email): return "Verify \(email) first — check your inbox."
         case .notAuthenticated: return "Sign in to keep going."
-        case .outOfCredits: return "You've used today's free videos. Two more tomorrow."
+        case .outOfCredits: return "You're out of credits."
         case .workerOffline: return "The GPU worker isn't answering. Try again in a moment."
         }
     }
@@ -47,10 +47,6 @@ actor APIClient {
         config.httpCookieAcceptPolicy = .always
         config.httpShouldSetCookies = true
         config.httpCookieStorage = .shared
-        // Tags every call as coming from the app. The backend hands out the
-        // daily free allowance on this header alone, so the website - which
-        // has its own pricing - is left untouched.
-        config.httpAdditionalHeaders = ["X-Client": "objectremoverai-ios"]
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 600
         // Deliberately false: with it on, an unresolvable host reports
@@ -88,7 +84,7 @@ actor APIClient {
 
     // MARK: - Core
 
-    func request(
+    private func request(
         _ path: String,
         method: String = "GET",
         json: [String: Any]? = nil
@@ -217,7 +213,7 @@ actor APIClient {
         }
     }
 
-    func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
+    private func decode<T: Decodable>(_ type: T.Type, from data: Data) throws -> T {
         do { return try JSONDecoder().decode(T.self, from: data) }
         catch { throw APIError.decoding }
     }
@@ -251,17 +247,6 @@ actor APIClient {
         )
     }
 
-    /// Asks the server to mail a reset link. It answers the same way whether or
-    /// not the address is on file, so the caller must not treat success as
-    /// proof the account exists.
-    func requestPasswordReset(email: String) async throws {
-        _ = try await request(
-            "api/auth/forgot-password",
-            method: "POST",
-            json: ["email": email]
-        )
-    }
-
     /// Trades the one-time code from the native Google flow for a real session
     /// cookie on this URLSession.
     func exchangeGoogleCode(_ code: String) async throws -> User {
@@ -282,16 +267,6 @@ actor APIClient {
 
         let data = try await request("api/auth/apple", method: "POST", json: payload)
         return try decode(AuthSuccessResponse.self, from: data).user
-    }
-
-    /// Apple requires an in-app way to delete an account wherever one can be
-    /// created (guideline 5.1.1(v)). The server removes the user record along
-    /// with their uploads and results.
-    func deleteAccount() async throws {
-        _ = try await request("api/auth/delete-account", method: "POST")
-        HTTPCookieStorage.shared.cookies(for: baseURL)?.forEach {
-            HTTPCookieStorage.shared.deleteCookie($0)
-        }
     }
 
     func logout() async {
@@ -335,32 +310,16 @@ actor APIClient {
     }
 
     private func uploadToB2(fileURL: URL, ticket: UploadURLResponse, contentType: String) async throws {
-        try await uploadToB2(
-            fileURL: fileURL,
-            uploadURL: ticket.uploadURL,
-            authToken: ticket.authToken,
-            remotePath: ticket.remotePath,
-            contentType: contentType
-        )
-    }
-
-    func uploadToB2(
-        fileURL: URL,
-        uploadURL: String,
-        authToken: String,
-        remotePath: String,
-        contentType: String
-    ) async throws {
-        guard let url = URL(string: uploadURL) else { throw APIError.decoding }
+        guard let url = URL(string: ticket.uploadURL) else { throw APIError.decoding }
 
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
-        req.setValue(authToken, forHTTPHeaderField: "Authorization")
+        req.setValue(ticket.authToken, forHTTPHeaderField: "Authorization")
         req.setValue(contentType, forHTTPHeaderField: "Content-Type")
         // B2 wants the path percent-encoded, and the backend opts out of the
         // checksum the same way the web client does.
-        let encodedPath = remotePath
-            .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? remotePath
+        let encodedPath = ticket.remotePath
+            .addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? ticket.remotePath
         req.setValue(encodedPath, forHTTPHeaderField: "X-Bz-File-Name")
         req.setValue("do_not_verify", forHTTPHeaderField: "X-Bz-Content-Sha1")
 
@@ -393,7 +352,7 @@ actor APIClient {
         let payload: [String: Any] = [
             "frame_data": frameBase64PNG,
             "frame_index": frameIndex,
-            "points": points.map(\.payload),
+            "points": points.map { ["x": $0.x, "y": $0.y, "label": $0.label] },
             "video_width": videoWidth,
             "video_height": videoHeight
         ]
@@ -411,7 +370,7 @@ actor APIClient {
         let payload: [String: Any] = [
             "task_id": taskId,
             "prompt_mode": "point",
-            "points": points.map(\.payload),
+            "points": points.map { ["x": $0.x, "y": $0.y, "label": $0.label] },
             "video_width": videoWidth,
             "video_height": videoHeight,
             "frame_index": frameIndex
@@ -424,28 +383,17 @@ actor APIClient {
         return jobId
     }
 
-    /// Static path: the drawn area is repeated on every frame
-    /// server-side, so SAM2 never runs.
-    func processStaticMask(
-        taskId: String,
-        maskBase64PNG: String,
-        videoWidth: Int,
-        videoHeight: Int,
-        frameCount: Int
-    ) async throws -> String {
-        let payload: [String: Any] = [
-            "task_id": taskId,
-            "mask_base64": maskBase64PNG,
-            "video_width": videoWidth,
-            "video_height": videoHeight,
-            "frame_count": frameCount
-        ]
-        let data = try await request("api/process-static-mask", method: "POST", json: payload)
-        let result = try decode(ProcessVideoResponse.self, from: data)
-        guard let jobId = result.jobId else {
-            throw APIError.http(500, result.message ?? "The server didn't return a job id.")
-        }
-        return jobId
+    // MARK: - Purchases
+
+    /// Hands a StoreKit signed transaction to the backend, which verifies it
+    /// against Apple's roots and moves the credits. Returns the new balance.
+    func redeemApplePurchase(signedTransaction jws: String) async throws -> Double {
+        let data = try await request(
+            "api/billing/apple/redeem",
+            method: "POST",
+            json: ["signed_transaction": jws]
+        )
+        return try decode(RedeemResponse.self, from: data).credits
     }
 
     func jobStatus(jobId: String) async throws -> JobStatusResponse {

@@ -4,7 +4,7 @@ enum PhotoSaverError: LocalizedError {
     case denied
 
     var errorDescription: String? {
-        "ObjectRemoverAI needs permission to add videos to your library. Enable it in Settings."
+        "MarkRemoverAI needs permission to add videos to your library. Enable it in Settings."
     }
 }
 

@@ -8,8 +8,6 @@ struct LoginView: View {
     @State private var name = ""
     @State private var email = ""
     @State private var password = ""
-    @State private var confirmPassword = ""
-    @State private var revealPasswords = false
     @State private var error: String?
     @State private var notice: String?
     @State private var busy = false
@@ -19,8 +17,7 @@ struct LoginView: View {
 
     private var canSubmit: Bool {
         !busy && email.contains("@") && password.count >= 6
-            && (!isRegistering || (!name.trimmingCharacters(in: .whitespaces).isEmpty
-                                   && confirmPassword == password))
+            && (!isRegistering || !name.trimmingCharacters(in: .whitespaces).isEmpty)
     }
 
     var body: some View {
@@ -44,27 +41,7 @@ struct LoginView: View {
                         field("Name", text: $name, content: .name)
                     }
                     field("Email", text: $email, content: .emailAddress, keyboard: .emailAddress)
-                    secureField("Password", text: $password,
-                                content: isRegistering ? .newPassword : .password)
-
-                    if isRegistering {
-                        secureField("Confirm password", text: $confirmPassword,
-                                    content: .newPassword)
-
-                        // Say it while they are still on the field rather than
-                        // failing the whole submit for one mistyped character.
-                        if !confirmPassword.isEmpty && confirmPassword != password {
-                            Text("Passwords don't match.")
-                                .font(.footnote)
-                                .foregroundStyle(.red)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        } else if (1..<6).contains(password.count) {
-                            Text("Use at least 6 characters.")
-                                .font(.footnote)
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                    }
+                    secureField("Password")
                 }
 
                 if let notice {
@@ -86,23 +63,9 @@ struct LoginView: View {
                 .buttonStyle(PrimaryButtonStyle(enabled: canSubmit))
                 .disabled(!canSubmit)
 
-                // Only on the sign-in side: there is nothing to recover while
-                // you are creating an account.
-                if !isRegistering {
-                    Button {
-                        Task { await sendReset() }
-                    } label: {
-                        Text("Forgot password?")
-                            .font(.subheadline)
-                            .foregroundStyle(Theme.accent)
-                    }
-                    .disabled(busy || email.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-
                 Button {
                     withAnimation {
                         isRegistering.toggle()
-                        confirmPassword = ""
                         error = nil
                         notice = nil
                     }
@@ -114,7 +77,7 @@ struct LoginView: View {
                     .foregroundStyle(Theme.accent)
                 }
 
-                Text("Two free videos a day, every day. No card, nothing to buy.")
+                Text("New accounts start with free credits. One credit erases one video.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -252,7 +215,7 @@ struct LoginView: View {
                 .frame(width: 68, height: 68)
                 .overlay(Image(systemName: "wand.and.stars").font(.system(size: 30)).foregroundStyle(.white))
 
-            Text("ObjectRemoverAI")
+            Text("MarkRemoverAI")
                 .font(.largeTitle.bold())
             Text("Erase anything from your videos.")
                 .font(.subheadline)
@@ -278,37 +241,12 @@ struct LoginView: View {
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
-    /// A password box with a reveal toggle. Typing a password blind is how you
-    /// end up with an account whose password you cannot reproduce, which is
-    /// exactly the state testers kept getting stuck in.
-    private func secureField(
-        _ label: String,
-        text: Binding<String>,
-        content: UITextContentType
-    ) -> some View {
-        HStack(spacing: 8) {
-            Group {
-                if revealPasswords {
-                    TextField(label, text: text)
-                } else {
-                    SecureField(label, text: text)
-                }
-            }
-            .textContentType(content)
-            .textInputAutocapitalization(.never)
-            .autocorrectionDisabled()
-
-            Button {
-                revealPasswords.toggle()
-            } label: {
-                Image(systemName: revealPasswords ? "eye.slash" : "eye")
-                    .foregroundStyle(.secondary)
-            }
-            .accessibilityLabel(revealPasswords ? "Hide password" : "Show password")
-        }
-        .padding(14)
-        .background(Color(.secondarySystemGroupedBackground))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    private func secureField(_ label: String) -> some View {
+        SecureField(label, text: $password)
+            .textContentType(isRegistering ? .newPassword : .password)
+            .padding(14)
+            .background(Color(.secondarySystemGroupedBackground))
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
     }
 
     private func banner(_ text: String, color: Color) -> some View {
@@ -335,31 +273,6 @@ struct LoginView: View {
             } else {
                 try await appState.signIn(email: email, password: password)
             }
-        } catch {
-            self.error = error.localizedDescription
-        }
-    }
-
-    /// Mails a reset link for whatever is in the email field.
-    ///
-    /// The server answers identically whether or not the address is on file,
-    /// so it cannot be used to discover which addresses have accounts. The
-    /// wording below reflects that: it does not claim the mail was sent.
-    private func sendReset() async {
-        let address = email.trimmingCharacters(in: .whitespaces)
-        guard !address.isEmpty else {
-            error = "Enter your email address first."
-            return
-        }
-
-        busy = true
-        error = nil
-        notice = nil
-        defer { busy = false }
-
-        do {
-            try await appState.requestPasswordReset(email: address)
-            notice = "If \(address) has an account, a reset link is on its way. The link is good for one hour."
         } catch {
             self.error = error.localizedDescription
         }

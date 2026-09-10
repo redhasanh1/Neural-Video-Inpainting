@@ -57,10 +57,6 @@ final class AppState: ObservableObject {
         try await APIClient.shared.register(email: email, password: password, name: name)
     }
 
-    func requestPasswordReset(email: String) async throws {
-        try await APIClient.shared.requestPasswordReset(email: email)
-    }
-
     func signInWithGoogle() async throws {
         // The OAuth page opens in Safari, which can't use our host failover, so
         // settle on a host that actually resolves before handing the URL over.
@@ -81,12 +77,6 @@ final class AppState: ObservableObject {
         )
         AppLog.info(.auth, "Apple sign-in succeeded for \(user.email)")
         phase = .signedIn(user)
-    }
-
-    func deleteAccount() async throws {
-        try await APIClient.shared.deleteAccount()
-        AppLog.info(.auth, "Account deleted")
-        phase = .signedOut
     }
 
     func signOut() async {

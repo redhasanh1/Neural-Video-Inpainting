@@ -27,16 +27,8 @@ struct User: Codable, Equatable {
         id = try c.decode(Int.self, forKey: .id)
         email = try c.decode(String.self, forKey: .email)
         name = try c.decodeIfPresent(String.self, forKey: .name)
-        // Postgres stores credits as NUMERIC, which reaches Python as a Decimal
-        // and is serialised by Flask as a JSON *string* ("12.0"), not a number.
-        // Decoding only as Double silently produced a balance of zero.
-        if let number = try? c.decode(Double.self, forKey: .credits) {
-            credits = number
-        } else if let text = try? c.decode(String.self, forKey: .credits) {
-            credits = Double(text) ?? 0
-        } else {
-            credits = 0
-        }
+        // The server has handed back credits as both Int and Double over its life.
+        credits = (try? c.decode(Double.self, forKey: .credits)) ?? 0
         emailVerified = (try? c.decode(Bool.self, forKey: .emailVerified)) ?? false
     }
 }
@@ -122,16 +114,8 @@ struct SelectionPoint: Codable, Identifiable, Equatable {
     let x: Int
     let y: Int
     let label: Int
-    /// Which object this click belongs to. The background pipeline tracks each
-    /// id separately, so without it every click collapses into one object.
-    var objectId: Int = 0
 
-    enum CodingKeys: String, CodingKey {
-        case x, y, label
-        case objectId = "object_id"
-    }
-
-    var payload: [String: Any] { ["x": x, "y": y, "label": label, "object_id": objectId] }
+    enum CodingKeys: String, CodingKey { case x, y, label }
 }
 
 struct SelectObjectResponse: Codable {
@@ -167,32 +151,19 @@ struct JobStatusResponse: Codable {
         case resultURL = "result_url"
         case newCredits = "new_credits"
     }
-
-    /// Decoded by hand because `new_credits` arrives as a JSON *string*: it
-    /// comes from a Postgres NUMERIC, reaches Flask as a Decimal, and jsonify
-    /// renders Decimal as "1.00" rather than 1.0.
-    ///
-    /// Letting that throw was catastrophic rather than cosmetic. The field is
-    /// only present on the response that reports completion - it is the credit
-    /// deduction - so the whole payload failed to decode at exactly the moment
-    /// a job finished, and never before. Callers use `try?`, so the failure
-    /// surfaced as a nil status, which reads as "still running" and left
-    /// finished renders spinning forever.
-    init(from decoder: Decoder) throws {
-        let c = try decoder.container(keyedBy: CodingKeys.self)
-        status = try c.decode(String.self, forKey: .status)
-        progress = try? c.decodeIfPresent(Int.self, forKey: .progress)
-        message = try? c.decodeIfPresent(String.self, forKey: .message)
-        resultURL = try? c.decodeIfPresent(String.self, forKey: .resultURL)
-        error = try? c.decodeIfPresent(String.self, forKey: .error)
-
-        if let number = try? c.decodeIfPresent(Double.self, forKey: .newCredits) {
-            newCredits = number
-        } else if let text = try? c.decodeIfPresent(String.self, forKey: .newCredits) {
-            newCredits = Double(text)
-        } else {
-            newCredits = nil
-        }
-    }
 }
 
+// MARK: - Purchases
+
+struct RedeemResponse: Codable {
+    let status: String
+    let credits: Double
+    let creditsAdded: Int?
+    let alreadyRedeemed: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case status, credits
+        case creditsAdded = "credits_added"
+        case alreadyRedeemed = "already_redeemed"
+    }
+}
