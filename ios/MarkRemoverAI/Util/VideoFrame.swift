@@ -3,10 +3,11 @@ import UIKit
 
 struct VideoFrame {
     let image: UIImage
-    /// Natural pixel size of the video, orientation already applied. Point
-    /// coordinates sent to SAM2 must be in this space.
+    /// Natural pixel size with the track's rotation already applied. Points
+    /// sent to SAM2 must be in this space.
     let pixelSize: CGSize
     let frameIndex: Int
+    let fps: Double
 }
 
 enum VideoFrameError: LocalizedError {
@@ -22,8 +23,14 @@ enum VideoFrameError: LocalizedError {
 }
 
 enum VideoFrameExtractor {
-    /// Grabs a frame for tapping on. Defaults to the first frame, which is what
-    /// the backend treats as frame 0 when it seeds the SAM2 track.
+    /// Longest edge used for the interactive mask preview. An 8K frame encoded
+    /// as base64 PNG runs to hundreds of megabytes, which no request should
+    /// carry — and SAM2's preview mask only has to look right on screen.
+    static let previewMaxEdge: CGFloat = 1600
+
+    /// Grabs a frame to mark up. Zero tolerance matters: at 250fps the frames
+    /// either side are 4ms away, and SAM2 seeds its track from the exact frame
+    /// index we report.
     static func frame(from url: URL, at seconds: Double = 0) async throws -> VideoFrame {
         let asset = AVURLAsset(url: url)
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
@@ -39,37 +46,84 @@ enum VideoFrameExtractor {
         generator.requestedTimeToleranceBefore = .zero
         generator.requestedTimeToleranceAfter = .zero
 
-        let time = CMTime(seconds: seconds, preferredTimescale: 600)
+        let requested = CMTime(seconds: seconds, preferredTimescale: 600)
         let cgImage: CGImage
+        let actualTime: CMTime
         do {
-            cgImage = try await generator.image(at: time).image
+            let result = try await generator.image(at: requested)
+            cgImage = result.image
+            actualTime = result.actualTime
         } catch {
             throw VideoFrameError.extractionFailed
         }
 
-        // Portrait iPhone video carries its rotation in the transform, so the
-        // upright size is what the worker sees after it decodes.
-        let orientedSize = naturalSize.applying(transform)
-        let pixelSize = CGSize(width: abs(orientedSize.width), height: abs(orientedSize.height))
+        // Portrait phone video carries its rotation in the transform, so the
+        // upright size is what the worker sees once it decodes.
+        let oriented = naturalSize.applying(transform)
+        let pixelSize = CGSize(width: abs(oriented.width), height: abs(oriented.height))
 
         let fps = nominalFrameRate > 0 ? Double(nominalFrameRate) : 30
+        // Derive the index from the frame actually returned, not the time we
+        // asked for — they differ whenever a seek lands on a keyframe boundary.
+        let index = Int((actualTime.seconds * fps).rounded())
+
         return VideoFrame(
             image: UIImage(cgImage: cgImage),
             pixelSize: pixelSize,
-            frameIndex: Int((seconds * fps).rounded())
+            frameIndex: max(0, index),
+            fps: fps
         )
     }
 
-    /// PNG, base64, no data: prefix — the shape `/api/sam2/select-object` wants.
-    static func base64PNG(_ image: UIImage) -> String? {
-        image.pngData()?.base64EncodedString()
+    struct PreviewPayload {
+        let base64PNG: String
+        let points: [SelectionPoint]
+        let size: CGSize
     }
 
-    /// Decodes the base64 PNG mask the worker returns so it can be laid over
-    /// the frame.
-    static func maskImage(fromBase64 base64: String) -> UIImage? {
-        guard let data = Data(base64Encoded: base64) else { return nil }
-        return UIImage(data: data)
+    /// Builds a preview-sized copy of the frame with the points rescaled to
+    /// match. Anything at or under the cap is sent untouched.
+    static func previewPayload(frame: VideoFrame, points: [SelectionPoint]) -> PreviewPayload? {
+        let longest = max(frame.pixelSize.width, frame.pixelSize.height)
+
+        guard longest > previewMaxEdge else {
+            guard let data = frame.image.pngData() else { return nil }
+            return PreviewPayload(
+                base64PNG: data.base64EncodedString(),
+                points: points,
+                size: frame.pixelSize
+            )
+        }
+
+        let scale = previewMaxEdge / longest
+        let target = CGSize(
+            width: (frame.pixelSize.width * scale).rounded(),
+            height: (frame.pixelSize.height * scale).rounded()
+        )
+
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        format.opaque = true
+        let scaled = UIGraphicsImageRenderer(size: target, format: format).image { _ in
+            frame.image.draw(in: CGRect(origin: .zero, size: target))
+        }
+
+        guard let data = scaled.pngData() else { return nil }
+
+        let moved = points.map {
+            // objectId has to come along: dropping it here let every click on a
+            // 4K clip collapse into object 0, since only downscaled frames pass
+            // through this branch.
+            SelectionPoint(
+                x: Int((Double($0.x) * scale).rounded()),
+                y: Int((Double($0.y) * scale).rounded()),
+                label: $0.label,
+                objectId: $0.objectId
+            )
+        }
+
+        AppLog.debug(.editor, "Preview downscaled \(Int(frame.pixelSize.width))→\(Int(target.width))px for the mask request")
+        return PreviewPayload(base64PNG: data.base64EncodedString(), points: moved, size: target)
     }
 
     static func duration(of url: URL) async -> Double {

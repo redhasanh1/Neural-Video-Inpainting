@@ -88,6 +88,11 @@ final class LogStore: ObservableObject {
 
     func clear() { entries.removeAll() }
 
+    /// The last few failures, for attaching to a support email.
+    func recentErrors(limit: Int) -> [String] {
+        entries.filter { $0.level == .error }.suffix(limit).map(\.line)
+    }
+
     var transcript: String {
         entries.map(\.line).joined(separator: "\n")
     }

@@ -7,6 +7,20 @@ enum Theme {
     static let positive = Color(red: 0.18, green: 0.73, blue: 0.44)
     static let warning = Color(red: 0.95, green: 0.62, blue: 0.20)
 
+    /// Background replacement gets its own colour so the two tools stay
+    /// distinguishable at a glance — you always know which one you're in.
+    static let orange = Color(red: 0.96, green: 0.53, blue: 0.16)
+    static let orangeSoft = Color(red: 0.96, green: 0.53, blue: 0.16).opacity(0.14)
+
+    static let orangeGradient = LinearGradient(
+        colors: [
+            Color(red: 0.98, green: 0.60, blue: 0.15),
+            Color(red: 0.93, green: 0.35, blue: 0.22)
+        ],
+        startPoint: .topLeading,
+        endPoint: .bottomTrailing
+    )
+
     static let heroGradient = LinearGradient(
         colors: [
             Color(red: 0.42, green: 0.36, blue: 0.90),
@@ -19,13 +33,14 @@ enum Theme {
 
 struct PrimaryButtonStyle: ButtonStyle {
     var enabled: Bool = true
+    var gradient: LinearGradient = Theme.heroGradient
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .font(.headline)
             .frame(maxWidth: .infinity)
             .padding(.vertical, 15)
-            .background(enabled ? AnyShapeStyle(Theme.heroGradient) : AnyShapeStyle(Color.gray.opacity(0.3)))
+            .background(enabled ? AnyShapeStyle(gradient) : AnyShapeStyle(Color.gray.opacity(0.3)))
             .foregroundStyle(.white)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .opacity(configuration.isPressed ? 0.85 : 1)

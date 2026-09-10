@@ -8,15 +8,23 @@
 
 /* Begin PBXFileReference section */
 		AA0000000000000000000005 /* MarkRemoverAI.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = MarkRemoverAI.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		AA0000000000000000000010 /* Products.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = Products.storekit; sourceTree = "<group>"; };
+		AA0000000000000000000020 /* MarkRemoverAITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = MarkRemoverAITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		AA0000000000000000000006 /* MarkRemoverAI */ = {isa = PBXFileSystemSynchronizedRootGroup; path = MarkRemoverAI; sourceTree = "<group>"; };
+		AA0000000000000000000021 /* MarkRemoverAITests */ = {isa = PBXFileSystemSynchronizedRootGroup; path = MarkRemoverAITests; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		AA0000000000000000000008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000022 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -30,7 +38,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000006 /* MarkRemoverAI */,
-				AA0000000000000000000010 /* Products.storekit */,
+				AA0000000000000000000021 /* MarkRemoverAITests */,
 				AA0000000000000000000003 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -39,6 +47,7 @@
 			isa = PBXGroup;
 			children = (
 				AA0000000000000000000005 /* MarkRemoverAI.app */,
+				AA0000000000000000000020 /* MarkRemoverAITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -68,7 +77,48 @@
 			productReference = AA0000000000000000000005 /* MarkRemoverAI.app */;
 			productType = "com.apple.product-type.application";
 		};
+		AA0000000000000000000025 /* MarkRemoverAITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = AA0000000000000000000029 /* Build configuration list for PBXNativeTarget "MarkRemoverAITests" */;
+			buildPhases = (
+				AA0000000000000000000023 /* Sources */,
+				AA0000000000000000000022 /* Frameworks */,
+				AA0000000000000000000024 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				AA0000000000000000000027 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				AA0000000000000000000021 /* MarkRemoverAITests */,
+			);
+			name = MarkRemoverAITests;
+			packageProductDependencies = (
+			);
+			productName = MarkRemoverAITests;
+			productReference = AA0000000000000000000020 /* MarkRemoverAITests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
+
+/* Begin PBXTargetDependency section */
+		AA0000000000000000000027 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = AA0000000000000000000004 /* MarkRemoverAI */;
+			targetProxy = AA0000000000000000000028 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		AA0000000000000000000028 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = AA0000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = AA0000000000000000000004;
+			remoteInfo = MarkRemoverAI;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXProject section */
 		AA0000000000000000000001 /* Project object */ = {
@@ -80,6 +130,10 @@
 				TargetAttributes = {
 					AA0000000000000000000004 = {
 						CreatedOnToolsVersion = 16.0;
+					};
+					AA0000000000000000000025 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = AA0000000000000000000004;
 					};
 				};
 			};
@@ -98,6 +152,7 @@
 			projectRoot = "";
 			targets = (
 				AA0000000000000000000004 /* MarkRemoverAI */,
+				AA0000000000000000000025 /* MarkRemoverAITests */,
 			);
 		};
 /* End PBXProject section */
@@ -110,10 +165,24 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		AA0000000000000000000024 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		AA0000000000000000000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA0000000000000000000023 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -184,15 +253,15 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MarkRemoverAI/MarkRemoverAI.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = KD3JCFB7N4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = MarkRemoverAI;
+				INFOPLIST_KEY_CFBundleDisplayName = ObjectRemoverAI;
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save your cleaned-up videos back to your photo library.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a video to remove objects from.";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -202,7 +271,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.markremoverai.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -212,15 +281,15 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = MarkRemoverAI/MarkRemoverAI.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 7;
 				DEVELOPMENT_TEAM = KD3JCFB7N4;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_KEY_CFBundleDisplayName = MarkRemoverAI;
+				INFOPLIST_KEY_CFBundleDisplayName = ObjectRemoverAI;
 				INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription = "Save your cleaned-up videos back to your photo library.";
 				INFOPLIST_KEY_NSPhotoLibraryUsageDescription = "Choose a video to remove objects from.";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
-				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -230,7 +299,43 @@
 				PRODUCT_BUNDLE_IDENTIFIER = com.markremoverai.app;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Release;
+		};
+		AA000000000000000000002A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 7;
+				DEVELOPMENT_TEAM = KD3JCFB7N4;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.markremoverai.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MarkRemoverAI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MarkRemoverAI";
+			};
+			name = Debug;
+		};
+		AA000000000000000000002B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 7;
+				DEVELOPMENT_TEAM = KD3JCFB7N4;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.markremoverai.app.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/MarkRemoverAI.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/MarkRemoverAI";
 			};
 			name = Release;
 		};
@@ -251,6 +356,15 @@
 			buildConfigurations = (
 				AA000000000000000000000E /* Debug */,
 				AA000000000000000000000F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		AA0000000000000000000029 /* Build configuration list for PBXNativeTarget "MarkRemoverAITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				AA000000000000000000002A /* Debug */,
+				AA000000000000000000002B /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
