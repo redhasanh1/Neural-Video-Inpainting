@@ -877,6 +877,38 @@ def _ensure_daily_credit_table(cur):
     """)
 
 
+def billable_task_cost(estimated):
+    """What a finished render should take off users.credits.
+
+    Renders started from the app are already booked against that day's app
+    allowance, so they must not also come out of the account balance - a user
+    who bought credits on the website would otherwise be charged twice for a
+    render the app told them was free.
+    """
+    try:
+        if _is_app_client():
+            return 0
+    except Exception:
+        pass
+    return max(0.1, round(float(estimated), 1))
+
+
+def app_daily_remaining(cur, user_id):
+    """Renders left in today's app allowance.
+
+    This is what the app is shown instead of users.credits, so a balance bought
+    on the website is never surfaced inside the app.
+    """
+    _ensure_daily_credit_table(cur)
+    cur.execute(
+        'SELECT used FROM app_daily_credits WHERE user_id = %s AND grant_date = CURRENT_DATE',
+        (user_id,)
+    )
+    row = cur.fetchone()
+    used = float(row[0]) if row else 0.0
+    return max(0.0, DAILY_FREE_CREDITS - used)
+
+
 def claim_app_daily_render(cur, user_id, cost=1):
     """Books one render against today's app allowance.
 
@@ -1580,6 +1612,13 @@ def auth_status():
                 return jsonify({'authenticated': False})
 
             email, name, credits, email_verified, created_at = user
+
+            # The app is shown what it can actually use today, not the account
+            # balance. Credits bought on the website are not spendable in the
+            # app, so showing them there would be both wrong and, under
+            # guideline 3.1.3(b), a claim we are not entitled to make.
+            if _is_app_client():
+                credits = app_daily_remaining(cur, user_id)
 
             return jsonify({
                 'authenticated': True,
@@ -6061,7 +6100,7 @@ def objrem_track():
         # Store credits in format expected by deduct_credit_on_completion()
         if user_id:
             redis_client.set(f"task:{task_id}:user_id", user_id)
-            redis_client.set(f"task:{task_id}:credits", str(max(0.1, round(float(estimated_credits), 1))))  # decimal credits
+            redis_client.set(f"task:{task_id}:credits", str(billable_task_cost(estimated_credits)))  # decimal credits
             redis_client.expire(f"task:{task_id}:user_id", 86400 * 7)  # 7 days
             redis_client.expire(f"task:{task_id}:credits", 86400 * 7)
 
@@ -6261,7 +6300,7 @@ def objrem_export():
         estimated_credits = float(job.get('estimated_credits', 0.5))
         if user_id:
             redis_client.set(f"task:{task_id}:user_id", user_id)
-            redis_client.set(f"task:{task_id}:credits", str(max(0.1, round(float(estimated_credits), 1))))  # decimal credits
+            redis_client.set(f"task:{task_id}:credits", str(billable_task_cost(estimated_credits)))  # decimal credits
             redis_client.expire(f"task:{task_id}:user_id", 86400 * 7)  # 7 days
             redis_client.expire(f"task:{task_id}:credits", 86400 * 7)
 
@@ -7919,7 +7958,7 @@ def process_video():
                 try:
                     redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
                     redis_client.setex(f"task:{result.id}:user_id", 86400 * 7, str(user_id))
-                    redis_client.setex(f"task:{result.id}:credits", 86400 * 7, str(estimated_credits))
+                    redis_client.setex(f"task:{result.id}:credits", 86400 * 7, str(billable_task_cost(estimated_credits)))
                     print(f"[CREDITS] Stored user {user_id}, credits {estimated_credits} for task {result.id}")
                 except Exception as e:
                     print(f"[CREDITS] Failed to store: {e}")
@@ -8722,7 +8761,7 @@ def sam2_process_video():
         if user_id:
             try:
                 redis_client.setex(f"task:{job_id}:user_id", 86400 * 7, str(user_id))
-                redis_client.setex(f"task:{job_id}:credits", 86400 * 7, str(estimated_credits))
+                redis_client.setex(f"task:{job_id}:credits", 86400 * 7, str(billable_task_cost(estimated_credits)))
                 print(f"[CREDITS] Stored user {user_id}, credits {estimated_credits} for SAM2 task {job_id}")
             except Exception as e:
                 print(f"[CREDITS] Failed to store: {e}")
@@ -8869,7 +8908,7 @@ def process_static_mask():
         if user_id:
             try:
                 redis_client.setex(f"task:{job_id}:user_id", 86400 * 7, str(user_id))
-                redis_client.setex(f"task:{job_id}:credits", 86400 * 7, str(estimated_credits))
+                redis_client.setex(f"task:{job_id}:credits", 86400 * 7, str(billable_task_cost(estimated_credits)))
                 print(f"[CREDITS] Stored user {user_id}, credits {estimated_credits} for static mask task {job_id}")
             except Exception as e:
                 print(f"[CREDITS] Failed to store: {e}")
