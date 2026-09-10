@@ -710,6 +710,28 @@ def require_credits(min_credits=1):
             try:
                 with get_db() as conn:
                     cur = conn.cursor()
+
+                    # The app is metered on its own daily allowance and never on
+                    # the shared balance, so credits bought on the website are
+                    # not spendable here. Guideline 3.1.3(b) only permits
+                    # honouring an outside purchase when the same thing is sold
+                    # as an in-app purchase, and the app sells nothing.
+                    if _is_app_client():
+                        allowed, used, allowance = claim_app_daily_render(
+                            cur, user_id, min_credits
+                        )
+                        conn.commit()
+                        if not allowed:
+                            return jsonify({
+                                'status': 'error',
+                                'error': "You've used today's free videos. "
+                                         'Two more tomorrow.',
+                                'used_today': used,
+                                'daily_allowance': allowance,
+                                'signin_required': False
+                            }), 402
+                        return f(*args, **kwargs)
+
                     cur.execute('SELECT credits FROM users WHERE id = %s', (user_id,))
                     result = cur.fetchone()
 
@@ -846,6 +868,47 @@ def _ensure_daily_credit_table(cur):
             updated_at TIMESTAMP DEFAULT NOW()
         )
     """)
+    # Renders started from the app are counted here rather than taken from the
+    # shared balance, so what somebody bought on the website cannot be spent
+    # inside the app.
+    cur.execute("""
+        ALTER TABLE app_daily_credits
+        ADD COLUMN IF NOT EXISTS used NUMERIC NOT NULL DEFAULT 0
+    """)
+
+
+def claim_app_daily_render(cur, user_id, cost=1):
+    """Books one render against today's app allowance.
+
+    The app is metered here instead of against users.credits so that credits
+    bought on the website are never spendable inside the app - that is what
+    guideline 3.1.3(b) requires when the app sells nothing itself. Returns
+    (allowed, used_after, allowance).
+    """
+    _ensure_daily_credit_table(cur)
+    cur.execute("""
+        INSERT INTO app_daily_credits (user_id, grant_date, granted, used)
+        VALUES (%s, CURRENT_DATE, 0, 0)
+        ON CONFLICT (user_id) DO UPDATE
+            SET grant_date = CURRENT_DATE, used = 0, updated_at = NOW()
+            WHERE app_daily_credits.grant_date < CURRENT_DATE
+    """, (user_id,))
+    cur.execute(
+        """UPDATE app_daily_credits SET used = used + %s, updated_at = NOW()
+           WHERE user_id = %s AND grant_date = CURRENT_DATE
+             AND used + %s <= %s
+           RETURNING used""",
+        (cost, user_id, cost, DAILY_FREE_CREDITS)
+    )
+    row = cur.fetchone()
+    if not row:
+        cur.execute(
+            'SELECT used FROM app_daily_credits WHERE user_id = %s AND grant_date = CURRENT_DATE',
+            (user_id,)
+        )
+        got = cur.fetchone()
+        return False, float(got[0]) if got else 0.0, DAILY_FREE_CREDITS
+    return True, float(row[0]), DAILY_FREE_CREDITS
 
 
 def grant_daily_free_credits(cur, user_id):
