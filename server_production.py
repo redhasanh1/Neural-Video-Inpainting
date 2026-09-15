@@ -347,6 +347,63 @@ hevc_transcode_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="
 BROWSER_SAFE_CODECS = {'h264', 'avc1', 'vp8', 'vp9', 'av1', 'av01'}
 
 # [HEVC] Transcode HEVC to H.264 for browser preview
+def download_file_resilient(url, dest_path, headers=None, timeout=120,
+                            attempts=6, min_bytes=1):
+    """Download a URL to a file, surviving a connection that drops mid-transfer.
+
+    Workers run on community hardware, and a node with a weak uplink breaks a
+    large download partway through - requests raises ChunkedEncodingError or a
+    bare ConnectionError. A single-shot `requests.get(...).content` turns that
+    into a failed render, which is why renders failed while the far smaller mask
+    requests kept working on the same node.
+
+    Each retry resumes with a Range header rather than starting over, so a clip
+    that keeps breaking at 80% still finishes instead of restarting from zero.
+    """
+    import requests, time as _t
+
+    headers = dict(headers or {})
+    last_err = None
+
+    for attempt in range(1, attempts + 1):
+        have = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
+        req_headers = dict(headers)
+        mode = 'wb'
+        if have > 0:
+            req_headers['Range'] = f'bytes={have}-'
+            mode = 'ab'
+        try:
+            with requests.get(url, headers=req_headers, stream=True,
+                              timeout=timeout) as r:
+                # A server that ignores Range answers 200 with the whole file;
+                # start clean then, or the parts get concatenated.
+                if have > 0 and r.status_code == 200:
+                    have, mode = 0, 'wb'
+                elif have > 0 and r.status_code == 416:
+                    return os.path.getsize(dest_path)   # already complete
+                r.raise_for_status()
+                with open(dest_path, mode) as f:
+                    for chunk in r.iter_content(chunk_size=1024 * 256):
+                        if chunk:
+                            f.write(chunk)
+            size = os.path.getsize(dest_path)
+            if size < min_bytes:
+                raise IOError(f"got {size} bytes, expected at least {min_bytes}")
+            if attempt > 1:
+                print(f"[DOWNLOAD] recovered on attempt {attempt} ({size} bytes)")
+            return size
+        except Exception as exc:
+            last_err = exc
+            got = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
+            wait = min(2 ** (attempt - 1), 15)
+            print(f"[DOWNLOAD] attempt {attempt}/{attempts} failed at {got} bytes "
+                  f"({type(exc).__name__}: {str(exc)[:90]}), retrying in {wait}s")
+            if attempt < attempts:
+                _t.sleep(wait)
+
+    raise last_err if last_err else IOError("download failed")
+
+
 def check_video_codec(video_path):
     """Check if video is HEVC/H.265 codec using ffprobe"""
     if not FFPROBE_EXE:
@@ -3020,11 +3077,9 @@ def start_redis_download_poller():
                     print(f"   [DOWNLOAD]  Downloading: {download_url}")
 
                     try:
-                        r = requests.get(download_url, headers={'ngrok-skip-browser-warning': 'true'}, timeout=120)
-                        r.raise_for_status()
-
-                        with open(cached_video, 'wb') as f:
-                            f.write(r.content)
+                        download_file_resilient(download_url, cached_video,
+                                                headers={'ngrok-skip-browser-warning': 'true'},
+                                                timeout=120)
 
                         file_size = os.path.getsize(cached_video) / (1024 * 1024)
                         print(f"   [OK] Worker {os.getpid()}: Downloaded and cached {video_id} ({file_size:.1f}MB)")
@@ -3350,12 +3405,9 @@ def broadcast_video_download(self, video_id, video_url, upload_filename):
         # Download video
         print(f"   [DOWNLOAD]  Downloading: {video_url}")
         import requests
-        r = requests.get(video_url, headers={'ngrok-skip-browser-warning': 'true'}, timeout=120)
-        r.raise_for_status()
-
-        # Save to cache
-        with open(cached_video, 'wb') as f:
-            f.write(r.content)
+        download_file_resilient(video_url, cached_video,
+                                headers={'ngrok-skip-browser-warning': 'true'},
+                                timeout=120)
 
         file_size = os.path.getsize(cached_video) / (1024 * 1024)
         print(f"   [OK] Video downloaded and cached ({file_size:.2f} MB)")
