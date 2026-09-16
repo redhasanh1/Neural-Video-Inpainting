@@ -182,6 +182,25 @@ except ImportError:
     STRIPE_ENABLED = False
     print("[WARNING] Stripe not installed - billing endpoints disabled")
 
+# Community GPU nodes often advertise IPv6 via DNS but have no route for it, so
+# the first connect fails instantly with "[Errno 101] Network is unreachable"
+# and every retry repeats it. Restricting name resolution to IPv4 makes those
+# nodes use the address family they can actually reach. Set FORCE_IPV4=0 to
+# disable if a host ever ends up IPv6-only.
+if os.getenv('FORCE_IPV4', '1') == '1':
+    try:
+        import socket as _socket
+        import urllib3.util.connection as _u3conn
+
+        def _ipv4_only():
+            return _socket.AF_INET
+
+        _u3conn.allowed_gai_family = _ipv4_only
+        print("[NET] outbound HTTP pinned to IPv4")
+    except Exception as _exc:
+        print(f"[NET] could not pin outbound HTTP to IPv4: {_exc}")
+
+
 # B2 + Cloudflare CDN for zero-egress file storage
 B2_KEY_ID = os.getenv('B2_KEY_ID', '')
 B2_APP_KEY = os.getenv('B2_APP_KEY', '')
@@ -357,8 +376,11 @@ def download_file_resilient(url, dest_path, headers=None, timeout=120,
     into a failed render, which is why renders failed while the far smaller mask
     requests kept working on the same node.
 
-    Each retry resumes with a Range header rather than starting over, so a clip
-    that keeps breaking at 80% still finishes instead of restarting from zero.
+    Each retry asks for a Range so a host that supports it resumes instead of
+    restarting from zero. The Cloudflare Worker in front of B2 currently ignores
+    Range and answers 200 with the whole file, so against that host this degrades
+    to a plain retry - still the difference between one failed render and six
+    attempts, but not a true resume until the Worker forwards Range to B2.
     """
     import requests, time as _t
 
