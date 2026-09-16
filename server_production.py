@@ -201,6 +201,40 @@ if os.getenv('FORCE_IPV4', '1') == '1':
         print(f"[NET] could not pin outbound HTTP to IPv4: {_exc}")
 
 
+# Workers live outside Railway, so every Redis call crosses the public TCP
+# proxy. A render holds its connection idle for minutes while the GPU works,
+# and the proxy reaps idle sockets - the next write then dies with
+# ConnectionResetError and takes the whole render with it. redis-py can handle
+# this itself, but only if it is told to: health_check_interval makes it PING a
+# connection that has been idle and transparently reconnect if the socket is
+# dead, keepalive stops the proxy reaping it in the first place, and the retry
+# covers a reset that still slips through.
+REDIS_SOCKET_KWARGS = {
+    'socket_keepalive': True,
+    'socket_connect_timeout': 10,
+    'socket_timeout': 30,
+    'health_check_interval': 30,
+    'retry_on_timeout': True,
+}
+
+
+def redis_from_url(url, **kwargs):
+    """redis.from_url with the settings that survive a reaped proxy connection."""
+    opts = dict(REDIS_SOCKET_KWARGS)
+    opts.update(kwargs)
+    try:
+        from redis.retry import Retry
+        from redis.backoff import ExponentialBackoff
+        from redis.exceptions import ConnectionError as _RedisConnError
+        from redis.exceptions import TimeoutError as _RedisTimeoutError
+        opts.setdefault('retry', Retry(ExponentialBackoff(cap=3, base=0.1), 3))
+        opts.setdefault('retry_on_error',
+                        [_RedisConnError, _RedisTimeoutError, ConnectionResetError])
+    except Exception:
+        pass   # older redis-py: keepalive + health check still apply
+    return redis.from_url(url, **opts)
+
+
 # B2 + Cloudflare CDN for zero-egress file storage
 B2_KEY_ID = os.getenv('B2_KEY_ID', '')
 B2_APP_KEY = os.getenv('B2_APP_KEY', '')
@@ -505,7 +539,7 @@ def transcode_hevc_pipeline(video_url, task_id):
 
     try:
         # Connect to Redis
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
 
         # Set initial status
         redis_client.setex(f"preview_status:{task_id}", 86400, "checking")
@@ -636,7 +670,7 @@ def transcode_hevc_pipeline(video_url, task_id):
         print(f"[HEVC] Pipeline error: {e}")
         # Always fallback to original on error
         try:
-            redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+            redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
             redis_client.setex(f"preview_status:{task_id}", 86400, "original")
             redis_client.setex(f"preview_url:{task_id}", 86400, video_url)
         except:
@@ -857,7 +891,7 @@ def deduct_credit_on_completion(task_id):
         return None
 
     try:
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
 
         # Look up user_id and credits amount from stored task data
         user_id = redis_client.get(f"task:{task_id}:user_id")
@@ -1099,7 +1133,7 @@ if not GPU_AVAILABLE:
         app.config['SESSION_TYPE'] = 'redis'
         app.config['SESSION_PERMANENT'] = True
         app.config['SESSION_USE_SIGNER'] = True  # Encrypt session cookie
-        app.config['SESSION_REDIS'] = redis.from_url(REDIS_URL)
+        app.config['SESSION_REDIS'] = redis_from_url(REDIS_URL)
         app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=30)
         app.config['SESSION_COOKIE_SECURE'] = True      # Required for HTTPS
         app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'   # Allow OAuth redirects
@@ -2645,10 +2679,32 @@ celery.conf.update(
     # Fix connection hanging and task pickup blocking
     broker_pool_limit=10,  # Celery default - stable connection pool (was 1 = too restrictive, None = connection churn)
     broker_connection_timeout=10,  # 10 second timeout for broker connection (increased from 3)
+    # Same reaped-connection problem as the plain Redis clients above: the
+    # broker socket sits idle while the GPU renders, so it needs the health
+    # check and keepalive too, plus retries rather than failing the task.
+    broker_connection_retry=True,
+    broker_connection_max_retries=None,   # keep retrying, never give up
+    broker_heartbeat=30,
     broker_transport_options={
         'visibility_timeout': 300,  # 5 minutes (default 3600) - tasks become visible again after 5min if worker crashes
+        'socket_keepalive': True,
+        'socket_connect_timeout': 10,
+        'socket_timeout': 30,
+        'health_check_interval': 30,
+        'retry_on_timeout': True,
+        'max_retries': 3,
     },
     result_backend_transport_options={'socket_connect_timeout': 10},
+    # The result backend ignores socket options passed in transport_options -
+    # verified against celery 5.6: they never reach the client. These redis_*
+    # settings are the ones it actually reads.
+    redis_socket_keepalive=True,
+    redis_socket_connect_timeout=10,
+    redis_socket_timeout=30,
+    redis_retry_on_timeout=True,
+    redis_backend_health_check_interval=30,
+    result_backend_always_retry=True,
+    result_backend_max_retries=5,
     task_ignore_result=False,  # We need results for status tracking
     task_acks_late=True,
     worker_disable_rate_limits=True,  # Disable rate limiting to prevent task pickup delays
@@ -3466,7 +3522,7 @@ def prepare_video_task(self, video_path, api_base=None, temp_base=None, video_id
         # Track processing start time for queue ETA calculation
         if video_id:
             try:
-                redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+                redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
                 redis_client.set(f"video:{video_id}:start_time", str(time_module.time()))
             except:
                 pass
@@ -5930,7 +5986,7 @@ def objrem_upload_complete():
             return jsonify({'status': 'error', 'message': 'Missing job_id or cdn_url'}), 400
 
         # Store metadata in Redis
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         redis_client.hset(f"objrem:{job_id}", mapping={
             'status': 'uploaded',
             'cdn_url': cdn_url,
@@ -5967,7 +6023,7 @@ def objrem_upload_complete():
 def objrem_video(job_id):
     """Stream video - redirect to B2 CDN or serve local file"""
     try:
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         job = redis_client.hgetall(f"objrem:{job_id}")
 
         if not job:
@@ -6007,7 +6063,7 @@ def objrem_select():
         if not job_id:
             return jsonify({'status': 'error', 'message': 'Missing job_id'}), 400
 
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         job = redis_client.hgetall(f"objrem:{job_id}")
 
         if not job:
@@ -6051,7 +6107,7 @@ def objrem_auto_detect():
         if not job_id:
             return jsonify({'status': 'error', 'message': 'Missing job_id'}), 400
 
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         job = redis_client.hgetall(f"objrem:{job_id}")
 
         if not job:
@@ -6100,7 +6156,7 @@ def objrem_track():
         if not job_id:
             return jsonify({'status': 'error', 'message': 'Missing job_id'}), 400
 
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         job = redis_client.hgetall(f"objrem:{job_id}")
 
         if not job:
@@ -6202,7 +6258,7 @@ def objrem_status(job_id):
         return ('', 204)
 
     try:
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         job = redis_client.hgetall(f"objrem:{job_id}")
 
         if not job:
@@ -6307,7 +6363,7 @@ def objrem_export():
         if not job_id:
             return jsonify({'status': 'error', 'message': 'Missing job_id'}), 400
 
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         job = redis_client.hgetall(f"objrem:{job_id}")
 
         if not job:
@@ -6407,7 +6463,7 @@ def objrem_preview():
 def objrem_download(job_id):
     """Download result - redirect to B2 CDN or serve local file"""
     try:
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         job = redis_client.hgetall(f"objrem:{job_id}")
 
         if not job:
@@ -6652,7 +6708,7 @@ def get_status(task_id):
                 # Get average processing time for ETA
                 avg_time = 120  # Default 2 minutes
                 try:
-                    redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+                    redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
                     times = redis_client.lrange('processing_times:recent', 0, 19)
                     if times:
                         times_float = [float(t) for t in times]
@@ -6932,7 +6988,7 @@ def download_from_url():
                     return jsonify({'error': 'B2 upload failed'}), 500
 
                 # Store in Redis
-                redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+                redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
                 redis_client.setex(f"upload:{task_id}:cdn_url", 86400, cdn_url)
                 redis_client.setex(f"upload:{task_id}:remote_path", 86400, remote_path)
 
@@ -7015,7 +7071,7 @@ def download_from_url():
                         return jsonify({'error': 'B2 upload failed'}), 500
 
                     # Store in Redis
-                    redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+                    redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
                     redis_client.setex(f"upload:{task_id}:cdn_url", 86400, cdn_url)
                     redis_client.setex(f"upload:{task_id}:remote_path", 86400, remote_path)
 
@@ -7222,7 +7278,7 @@ def download_external():
                                 return jsonify({'error': 'B2 upload failed'}), 500
 
                             # Store in Redis
-                            redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+                            redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
                             redis_client.setex(f"upload:{task_id}:cdn_url", 86400, cdn_url)
                             redis_client.setex(f"upload:{task_id}:remote_path", 86400, remote_path)
 
@@ -7458,7 +7514,7 @@ def upload_complete():
 
         # Store CDN URL in Redis
         try:
-            redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+            redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
             redis_client.setex(f"upload:{task_id}:cdn_url", 86400, cdn_url)
             redis_client.setex(f"upload:{task_id}:remote_path", 86400, remote_path)
             print(f"[B2-DIRECT] Upload complete: {task_id} -> {cdn_url}")
@@ -7509,7 +7565,7 @@ def get_preview(task_id):
         return ('', 204)
 
     try:
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
 
         # Check transcode status
         status = redis_client.get(f"preview_status:{task_id}")
@@ -7894,7 +7950,7 @@ def trigger_sprite_generation(task_id):
         if not video_url:
             # Try to get from Redis
             try:
-                redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+                redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
                 video_url = redis_client.get(f"upload:{task_id}:cdn_url")
             except:
                 pass
@@ -8030,7 +8086,7 @@ def process_video():
             estimated_credits = data.get('estimated_credits', 1)
             if user_id:
                 try:
-                    redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+                    redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
                     redis_client.setex(f"task:{result.id}:user_id", 86400 * 7, str(user_id))
                     redis_client.setex(f"task:{result.id}:credits", 86400 * 7, str(billable_task_cost(estimated_credits)))
                     print(f"[CREDITS] Stored user {user_id}, credits {estimated_credits} for task {result.id}")
@@ -8057,7 +8113,7 @@ def serve_upload(filename):
 
     # Check Redis for CDN URL
     try:
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         cdn_url = redis_client.get(f"upload:{task_id}:cdn_url")
         if cdn_url:
             print(f"[CDN] Redirecting upload {filename} to: {cdn_url}")
@@ -8309,7 +8365,7 @@ def serve_result(filename):
 
     # Check Redis for CDN URL
     try:
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         cdn_url = redis_client.get(f"video:{task_id}:final_path")
         if cdn_url and cdn_url.startswith('http'):
             print(f"[CDN] Redirecting result {filename} to: {cdn_url}")
@@ -8578,7 +8634,7 @@ def get_stats():
         # Get average processing time from Redis
         avg_processing_time = 120  # Default 2 minutes
         try:
-            redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+            redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
             times = redis_client.lrange('processing_times:recent', 0, 19)  # Last 20 jobs
             if times:
                 times_float = [float(t) for t in times]
@@ -8634,7 +8690,7 @@ def sam2_status(task_id):
 def sam2_get_result(request_id):
     """Poll for the result of a SAM2 selection task."""
     try:
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         result_key = f'sam2:result:{request_id}'
         result = redis_client.get(result_key)
 
@@ -8672,7 +8728,7 @@ def sam2_select_object():
             return jsonify({'status': 'error', 'message': 'Redis not configured'}), 500
 
         print(f"[SAM2] Using Redis: {REDIS_URL[:50]}...")
-        redis_client = redis.from_url(REDIS_URL, decode_responses=False)
+        redis_client = redis_from_url(REDIS_URL, decode_responses=False)
 
         # Subscribe to response channel BEFORE pushing request
         response_channel = f'sam2:selection:response:{request_id}'
@@ -8760,7 +8816,7 @@ def sam2_process_video():
                 return jsonify({'status': 'error', 'message': 'No points selected'}), 400
 
         # Get video CDN URL from Redis (videos are uploaded directly to B2)
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         cdn_url_key = f"upload:{task_id}:cdn_url"
         cdn_url = redis_client.get(cdn_url_key)
 
@@ -8893,7 +8949,7 @@ def process_static_mask():
             return jsonify({'status': 'error', 'message': 'No mask provided'}), 400
 
         # Get video URL from Redis (already uploaded by user)
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         video_url = redis_client.get(f"upload:{task_id}:cdn_url")
         if not video_url:
             return jsonify({'status': 'error', 'message': 'Video URL not found - please re-upload'}), 404
@@ -9380,7 +9436,7 @@ def _mint_native_auth_code(user_id):
     and is deleted on first use, so intercepting the redirect buys nothing after
     the app has already redeemed it."""
     try:
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         code = secrets.token_urlsafe(32)
         redis_client.setex(f'nativeauth:{code}', 300, str(user_id))
         return code
@@ -9461,7 +9517,7 @@ def auth_exchange():
         return jsonify({'error': 'Missing code'}), 400
 
     try:
-        redis_client = redis.from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        redis_client = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
         key = f'nativeauth:{code}'
         user_id = redis_client.get(key)
         # Burn it immediately - a code is good for exactly one exchange.
