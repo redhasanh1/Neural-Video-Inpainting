@@ -3335,7 +3335,7 @@
 
     <!-- SAM2 Timeline and Selection Scripts -->
     
-    <script src="js/sam2_selector.js?v=8"></script>
+    <script src="js/sam2_selector.js?v=9"></script>
     <!-- MaskDrawer INLINED to bypass Cloudflare Worker routing issue -->
     <script>
 /**
@@ -4456,14 +4456,24 @@ console.log('[INLINE] MaskDrawer class loaded');
             }
         });
 
-        // Window resize handler to recalculate video render bounds for letterbox compensation
-        window.addEventListener('resize', () => {
-            if (sam2Selector && typeof sam2Selector.calculateVideoRenderBounds === 'function') {
-                sam2Selector.calculateVideoRenderBounds();
-                sam2Selector.draw();
-                console.log('[SAM2] Recalculated render bounds on resize');
+        // Window resize handler - must go through updateCanvasSize(), because
+        // calculateVideoRenderBounds() does NOT refresh displayScaleX/Y and a stale
+        // scale sends the click to the wrong place. On mobile this fires constantly
+        // (Chrome's collapsing URL bar, rotation), which is why taps landed off there
+        // and not on desktop. visualViewport covers the URL-bar case, which does not
+        // always raise a window resize event.
+        const sam2Resync = () => {
+            if (sam2Selector && typeof sam2Selector.updateCanvasSize === 'function') {
+                sam2Selector.updateCanvasSize();
+                console.log('[SAM2] Recalculated canvas scale on viewport change');
             }
-        });
+        };
+        window.addEventListener('resize', sam2Resync);
+        window.addEventListener('orientationchange', () => setTimeout(sam2Resync, 250));
+        if (window.visualViewport) {
+            window.visualViewport.addEventListener('resize', sam2Resync);
+            window.visualViewport.addEventListener('scroll', sam2Resync);
+        }
 
         // Test SAM2 connection button handler
         const testSAM2Btn = document.getElementById('testSAM2Btn');

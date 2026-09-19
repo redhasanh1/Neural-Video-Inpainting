@@ -197,14 +197,29 @@ class SAM2Selector {
         const clickX = e.clientX - rect.left;
         const clickY = e.clientY - rect.top;
 
-        // Use pre-calculated scale (set in updateCanvasSize) - simpler and works on Android
-        const videoX = Math.floor(clickX / this.displayScaleX);
-        const videoY = Math.floor(clickY / this.displayScaleY);
+        // Derive the scale from the rect we just measured, never from a cached
+        // value. displayScaleX/Y are only refreshed by updateCanvasSize(), but the
+        // canvas resizes without it on mobile every time Chrome's URL bar hides or
+        // the device rotates - the click offset above would then be current while
+        // the scale was stale, and the point landed somewhere else entirely.
+        const vw = this.video.videoWidth || this.videoWidth;
+        const vh = this.video.videoHeight || this.videoHeight;
+        if (!vw || !vh || rect.width < 1 || rect.height < 1) return null;
+
+        const scaleX = rect.width / vw;
+        const scaleY = rect.height / vh;
+
+        // Keep the cached values in step so anything else reading them agrees.
+        this.displayScaleX = scaleX;
+        this.displayScaleY = scaleY;
+
+        const videoX = Math.floor(clickX / scaleX);
+        const videoY = Math.floor(clickY / scaleY);
 
         // Clamp to video bounds
         return {
-            x: Math.max(0, Math.min(videoX, this.videoWidth - 1)),
-            y: Math.max(0, Math.min(videoY, this.videoHeight - 1)),
+            x: Math.max(0, Math.min(videoX, vw - 1)),
+            y: Math.max(0, Math.min(videoY, vh - 1)),
             displayX: clickX,
             displayY: clickY
         };
