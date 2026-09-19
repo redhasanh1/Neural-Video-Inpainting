@@ -8857,20 +8857,77 @@ def sam2_process_video():
         # Create masks directory
         masks_dir = f"/tmp/{task_id}_sam2_masks"
 
+        # --- CLICK-SPACE NORMALISATION -------------------------------------
+        # The browser may not be showing the file the worker will track. An
+        # iPhone uploads 4K HEVC, which no browser can decode, so we transcode a
+        # 720x1280 H.264 preview and the player shows THAT - the user clicks in
+        # preview space. The worker meanwhile downloads the ORIGINAL and
+        # straightens it (3840x2160 rotation -90 -> 2160x3840), so an unscaled
+        # click lands at a third of the intended position and SAM2 segments the
+        # background instead of the object. Whether this happens is a race: if
+        # the render starts before the transcode finishes the player gets the
+        # original and the coords happen to line up, which is why the same file
+        # works from a fast desktop upload and fails from a phone.
+        # Scale the click from the space the browser actually displayed into the
+        # worker's upright space. No-op when they already match.
+        def _upright_dims(url):
+            """(width, height) of the video as the worker will see it, or None."""
+            try:
+                import subprocess as _sp
+                out = _sp.run(
+                    ['ffprobe', '-v', 'error', '-select_streams', 'v:0',
+                     '-show_entries', 'stream=width,height:stream_side_data=rotation:stream_tags=rotate',
+                     '-of', 'default=noprint_wrappers=1', url],
+                    capture_output=True, text=True, timeout=45).stdout
+                vals = dict(
+                    line.split('=', 1) for line in out.splitlines() if '=' in line
+                )
+                w, h = int(vals['width']), int(vals['height'])
+                rot = 0
+                for key in ('rotation', 'rotate'):
+                    if key in vals:
+                        try:
+                            rot = int(float(vals[key])) % 360
+                            break
+                        except Exception:
+                            pass
+                if rot in (90, 270):      # worker bakes this upright before tracking
+                    w, h = h, w
+                return w, h
+            except Exception as exc:
+                print(f"[SAM2][SCALE] probe failed ({exc}); sending clicks unscaled")
+                return None
+
+        scale_x = scale_y = 1.0
+        if video_width and video_height:
+            dims = _upright_dims(video_path)
+            if dims:
+                real_w, real_h = dims
+                if real_w != int(video_width) or real_h != int(video_height):
+                    scale_x = real_w / float(video_width)
+                    scale_y = real_h / float(video_height)
+                    print(f"[SAM2][SCALE] client {video_width}x{video_height} -> "
+                          f"video {real_w}x{real_h}; scaling clicks by "
+                          f"{scale_x:.3f}x{scale_y:.3f}")
+                else:
+                    print(f"[SAM2][SCALE] client matches video ({real_w}x{real_h}); no scaling")
+
         # Chain: WSL SAM2 mask generation → Windows ProPainter inpainting
         from celery import signature, chain
 
         # Build kwargs based on prompt mode
         if prompt_mode == 'bbox':
             # Bbox mode: use bounding box for SAM2 tracking
-            wsl_bbox = [int(x) for x in bbox]  # [x1, y1, x2, y2]
+            wsl_bbox = [int(bbox[0] * scale_x), int(bbox[1] * scale_y),
+                        int(bbox[2] * scale_x), int(bbox[3] * scale_y)]
             s1_kwargs = {'prompt_mode': 'bbox', 'bbox': wsl_bbox, 'frame_idx': frame_index, 'api_base': api_base}
             print(f"[SAM2] Mode: bbox, bbox={wsl_bbox}")
         else:
             # Point mode: use click points for SAM2 tracking
             # Frontend sends: [{x, y, label, ...}, ...]
             # WSL worker expects: points=[(x,y), ...], labels=[1, 1, ...]
-            wsl_points = [(int(p.get('x', 0)), int(p.get('y', 0))) for p in points]
+            wsl_points = [(int(p.get('x', 0) * scale_x), int(p.get('y', 0) * scale_y))
+                          for p in points]
             wsl_labels = [int(p.get('label', 1)) for p in points]
             s1_kwargs = {'prompt_mode': 'point', 'points': wsl_points, 'labels': wsl_labels, 'frame_idx': frame_index, 'api_base': api_base}
             print(f"[SAM2] Mode: point, points={len(wsl_points)}")
