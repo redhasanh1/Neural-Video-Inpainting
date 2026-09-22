@@ -830,11 +830,23 @@ def require_credits(min_credits=1):
                     # honouring an outside purchase when the same thing is sold
                     # as an in-app purchase, and the app sells nothing.
                     if _is_app_client():
+                        # One render passes through more than one credit-gated
+                        # endpoint (/api/process, then /api/sam2/process-video).
+                        # The website path defers its charge to task completion
+                        # behind a credits_deducted guard, but this gate spends
+                        # immediately - so without a per-video guard a single
+                        # render consumed the whole daily allowance and app users
+                        # got one video a day instead of two. Book once per
+                        # task_id; later gates for the same video pass through.
+                        claim_key = _app_claim_key()
+                        if not _app_claim_take(claim_key):
+                            return f(*args, **kwargs)
                         allowed, used, allowance = claim_app_daily_render(
-                            cur, user_id, min_credits
+                            cur, user_id, 1
                         )
                         conn.commit()
                         if not allowed:
+                            _app_claim_release(claim_key)
                             return jsonify({
                                 'status': 'error',
                                 'error': "You've used today's free videos. "
@@ -1020,6 +1032,41 @@ def app_daily_remaining(cur, user_id):
     row = cur.fetchone()
     used = float(row[0]) if row else 0.0
     return max(0.0, DAILY_FREE_CREDITS - used)
+
+
+def _app_claim_key():
+    """Redis key naming the video this request is about, or None."""
+    try:
+        body = request.get_json(silent=True) or {}
+        task_id = str(body.get('task_id') or '').strip()
+        return f"app_daily_claim:{task_id}" if task_id else None
+    except Exception:
+        return None
+
+
+def _app_claim_take(key):
+    """True when THIS request is the one that booked the video.
+
+    False means the video was already booked by an earlier endpoint in the same
+    render, so it must not be charged twice.
+    """
+    if not key:
+        return True
+    try:
+        rc = redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True)
+        return bool(rc.set(key, '1', nx=True, ex=86400))
+    except Exception:
+        return True      # Redis down: fall back to charging, never to free renders
+
+
+def _app_claim_release(key):
+    """Undo the marker when the booking itself failed."""
+    if not key:
+        return
+    try:
+        redis_from_url(os.environ.get('REDIS_URL'), decode_responses=True).delete(key)
+    except Exception:
+        pass
 
 
 def claim_app_daily_render(cur, user_id, cost=1):
