@@ -1035,24 +1035,34 @@ def app_daily_remaining(cur, user_id):
     return max(0.0, DAILY_FREE_CREDITS - used)
 
 
+_APP_USER_COLUMN_READY = False
+
+
 def _mark_app_user(cur, user_id):
     """Record that this account has used the iOS app.
 
     Whether a request is "the app" is read off a header and otherwise never
     persisted, so there was no way to tell from the database which accounts came
     from the App Store - the only trace was an app_daily_credits row. This is a
-    plain flag for reporting; metering still reads the header, so setting it
-    changes no behaviour and cannot let website credits be spent in the app.
+    reporting flag only: metering still reads the header, so it changes no
+    behaviour and cannot make website credits spendable in the app.
+
+    The ALTER runs once per process, not per request - DDL takes a brief lock on
+    users, and this is called on every app launch.
     """
+    global _APP_USER_COLUMN_READY
     try:
-        cur.execute(
-            'ALTER TABLE users ADD COLUMN IF NOT EXISTS is_app_user BOOLEAN DEFAULT FALSE'
-        )
+        if not _APP_USER_COLUMN_READY:
+            cur.execute(
+                'ALTER TABLE users ADD COLUMN IF NOT EXISTS is_app_user BOOLEAN DEFAULT FALSE'
+            )
+            _APP_USER_COLUMN_READY = True
         cur.execute(
             'UPDATE users SET is_app_user = TRUE WHERE id = %s AND is_app_user IS NOT TRUE',
             (user_id,)
         )
     except Exception as exc:
+        # Never let a reporting flag break a sign-in or a render.
         print(f"[APP-FLAG] could not mark user {user_id}: {exc}")
 
 
