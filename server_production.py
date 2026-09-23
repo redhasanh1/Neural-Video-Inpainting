@@ -988,11 +988,29 @@ def _ensure_daily_credit_table(cur):
     """One row per user recording the last day their allowance was claimed."""
     cur.execute("""
         CREATE TABLE IF NOT EXISTS app_daily_credits (
-            user_id    INTEGER PRIMARY KEY,
+            user_id    INTEGER NOT NULL,
             grant_date DATE NOT NULL,
             granted    NUMERIC NOT NULL DEFAULT 0,
-            updated_at TIMESTAMP DEFAULT NOW()
+            updated_at TIMESTAMP DEFAULT NOW(),
+            PRIMARY KEY (user_id, grant_date)
         )
+    """)
+    # Older installs keyed this on user_id alone, so each day overwrote the last
+    # and there was no way to see what an account had used before today. Widen
+    # the key to (user_id, grant_date) so every day keeps its own row.
+    cur.execute("""
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'app_daily_credits'::regclass
+                  AND contype = 'p'
+                  AND pg_get_constraintdef(oid) = 'PRIMARY KEY (user_id)'
+            ) THEN
+                ALTER TABLE app_daily_credits DROP CONSTRAINT app_daily_credits_pkey;
+                ALTER TABLE app_daily_credits ADD PRIMARY KEY (user_id, grant_date);
+            END IF;
+        END $$;
     """)
     # Renders started from the app are counted here rather than taken from the
     # shared balance, so what somebody bought on the website cannot be spent
@@ -1113,9 +1131,7 @@ def claim_app_daily_render(cur, user_id, cost=1):
     cur.execute("""
         INSERT INTO app_daily_credits (user_id, grant_date, granted, used)
         VALUES (%s, CURRENT_DATE, 0, 0)
-        ON CONFLICT (user_id) DO UPDATE
-            SET grant_date = CURRENT_DATE, used = 0, updated_at = NOW()
-            WHERE app_daily_credits.grant_date < CURRENT_DATE
+        ON CONFLICT (user_id, grant_date) DO NOTHING
     """, (user_id,))
     cur.execute(
         """UPDATE app_daily_credits SET used = used + %s, updated_at = NOW()
@@ -1151,12 +1167,13 @@ def grant_daily_free_credits(cur, user_id):
     try:
         _ensure_daily_credit_table(cur)
 
+        # With one row per day, inserting today's row IS claiming the day: the
+        # first request of the day inserts and gets a row back, every later one
+        # conflicts and gets nothing, so the payout below runs exactly once.
         cur.execute("""
             INSERT INTO app_daily_credits (user_id, grant_date, granted)
             VALUES (%s, CURRENT_DATE, 0)
-            ON CONFLICT (user_id) DO UPDATE
-                SET grant_date = CURRENT_DATE, updated_at = NOW()
-                WHERE app_daily_credits.grant_date < CURRENT_DATE
+            ON CONFLICT (user_id, grant_date) DO NOTHING
             RETURNING user_id
         """, (user_id,))
 
@@ -1177,7 +1194,8 @@ def grant_daily_free_credits(cur, user_id):
 
         new_balance = float(row[0])
         cur.execute(
-            'UPDATE app_daily_credits SET granted = %s WHERE user_id = %s',
+            'UPDATE app_daily_credits SET granted = %s '
+            'WHERE user_id = %s AND grant_date = CURRENT_DATE',
             (new_balance, user_id)
         )
         print(f"[FREE-TIER] User {user_id} topped up to {new_balance} for today")
