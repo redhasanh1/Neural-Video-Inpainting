@@ -838,6 +838,7 @@ def require_credits(min_credits=1):
                         # render consumed the whole daily allowance and app users
                         # got one video a day instead of two. Book once per
                         # task_id; later gates for the same video pass through.
+                        _mark_app_user(cur, user_id)
                         claim_key = _app_claim_key()
                         if not _app_claim_take(claim_key):
                             return f(*args, **kwargs)
@@ -1032,6 +1033,27 @@ def app_daily_remaining(cur, user_id):
     row = cur.fetchone()
     used = float(row[0]) if row else 0.0
     return max(0.0, DAILY_FREE_CREDITS - used)
+
+
+def _mark_app_user(cur, user_id):
+    """Record that this account has used the iOS app.
+
+    Whether a request is "the app" is read off a header and otherwise never
+    persisted, so there was no way to tell from the database which accounts came
+    from the App Store - the only trace was an app_daily_credits row. This is a
+    plain flag for reporting; metering still reads the header, so setting it
+    changes no behaviour and cannot let website credits be spent in the app.
+    """
+    try:
+        cur.execute(
+            'ALTER TABLE users ADD COLUMN IF NOT EXISTS is_app_user BOOLEAN DEFAULT FALSE'
+        )
+        cur.execute(
+            'UPDATE users SET is_app_user = TRUE WHERE id = %s AND is_app_user IS NOT TRUE',
+            (user_id,)
+        )
+    except Exception as exc:
+        print(f"[APP-FLAG] could not mark user {user_id}: {exc}")
 
 
 def _app_claim_key():
@@ -1778,6 +1800,7 @@ def auth_status():
             # app, so showing them there would be both wrong and, under
             # guideline 3.1.3(b), a claim we are not entitled to make.
             if _is_app_client():
+                _mark_app_user(cur, user_id)
                 credits = app_daily_remaining(cur, user_id)
 
             return jsonify({
