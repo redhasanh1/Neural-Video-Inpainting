@@ -75,6 +75,37 @@ celery = Celery('wsl_sam2_worker', broker=REDIS_URL, backend=REDIS_URL)
 celery.conf.task_track_started = True
 celery.conf.broker_connection_retry_on_startup = True
 
+# This worker reaches Redis through Railway's public proxy, which drops idle
+# connections. Celery's redis transport waits on a blocking BRPOP, and with no
+# socket timeout that call never returns once the connection is half-open: the
+# process stays alive and "ready", stops consuming wsl_sam2, and because it
+# never exits the tmux watchdog never restarts it and no crash notification is
+# sent. That is how four renders sat queued while the container looked healthy.
+# socket_timeout bounds the wait, health_check_interval re-pings an idle
+# connection, keepalive stops the proxy reaping it. Verified against celery 5.6:
+# socket options in result_backend_transport_options never reach the client, so
+# the backend needs the redis_* keys below.
+celery.conf.update(
+    broker_connection_retry=True,
+    broker_connection_max_retries=None,
+    broker_heartbeat=30,
+    broker_transport_options={
+        'socket_keepalive': True,
+        'socket_connect_timeout': 10,
+        'socket_timeout': 60,
+        'health_check_interval': 30,
+        'retry_on_timeout': True,
+        'max_retries': 3,
+    },
+    redis_socket_keepalive=True,
+    redis_socket_connect_timeout=10,
+    redis_socket_timeout=60,
+    redis_retry_on_timeout=True,
+    redis_backend_health_check_interval=30,
+    result_backend_always_retry=True,
+    result_backend_max_retries=5,
+)
+
 # Add local path for imports
 sys.path.insert(0, BASE_DIR)
 
