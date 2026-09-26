@@ -106,6 +106,82 @@ celery.conf.update(
     result_backend_max_retries=5,
 )
 
+
+
+# --- memory recycling ------------------------------------------------------
+# Celery only recycles workers that have child processes. This worker runs
+# --pool=threads (and the SAM2 one --pool=solo), so worker_max_tasks_per_child
+# never fires and everything a render allocates stays in the one process:
+# measured on a live 3090 box the propainter worker sat at 3.81GB and the SAM2
+# worker at 2.32GB, and the container ratcheted 5.8GB -> 6.5GB -> 8.9GB over a
+# few days until it OOM-killed and hung. torch.cuda.empty_cache() does not help
+# because that frees VRAM, not host RAM, and gc.collect() leaves freed pages in
+# glibc's arenas rather than returning them to the OS.
+#
+# So recycle deliberately: once a render finishes, if this process is over the
+# limit, exit. The tmux supervisor in docker-entrypoint-unified.sh restarts any
+# window that exits, so the OS reclaims everything and a fresh worker takes
+# over within seconds. The cgroup is not mounted in the container, so RSS from
+# /proc/self/statm is the only reading available.
+WORKER_MAX_RSS_MB = int(os.getenv('WORKER_MAX_RSS_MB', '3000'))
+_active_tasks = 0
+
+
+_rss_unreadable_warned = False
+
+
+def _self_rss_mb():
+    """Resident MB for this process, or -1 when it cannot be read.
+
+    Returning 0 on failure would silently disable recycling, which is the
+    failure we are trying to prevent, so an unreadable /proc is reported once
+    and treated as "unknown" rather than "fine".
+    """
+    global _rss_unreadable_warned
+    try:
+        with open('/proc/self/statm') as fh:
+            pages = int(fh.read().split()[1])
+        return pages * os.sysconf('SC_PAGE_SIZE') / (1024 * 1024)
+    except Exception as exc:
+        if not _rss_unreadable_warned:
+            _rss_unreadable_warned = True
+            print(f"[RECYCLE] cannot read /proc/self/statm ({exc}); "
+                  f"memory recycling is INACTIVE", flush=True)
+        return -1.0
+
+
+def _recycle_if_bloated():
+    """Exit (and let the supervisor restart us) when over the RSS ceiling."""
+    if WORKER_MAX_RSS_MB <= 0 or _active_tasks > 0:
+        return                      # disabled, or a sibling task still running
+    rss = _self_rss_mb()
+    if rss < 0 or rss < WORKER_MAX_RSS_MB:
+        return                      # unknown, or still under the ceiling
+    print(f"[RECYCLE] RSS {rss:.0f}MB over {WORKER_MAX_RSS_MB}MB ceiling - "
+          f"exiting so the supervisor starts a clean worker", flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)
+
+
+try:
+    from celery.signals import task_prerun as _task_prerun
+    from celery.signals import task_postrun as _task_postrun
+
+    @_task_prerun.connect
+    def _count_task_start(**_kw):
+        global _active_tasks
+        _active_tasks += 1
+
+    @_task_postrun.connect
+    def _count_task_end(**_kw):
+        global _active_tasks
+        _active_tasks = max(0, _active_tasks - 1)
+        _recycle_if_bloated()
+except Exception as _exc:
+    print(f"[RECYCLE] could not install memory recycling: {_exc}")
+# --- end memory recycling --------------------------------------------------
+
 # Add local path for imports
 sys.path.insert(0, BASE_DIR)
 
