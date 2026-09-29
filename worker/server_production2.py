@@ -637,10 +637,22 @@ def _recycle_if_bloated():
     if rss < 0 or rss < WORKER_MAX_RSS_MB:
         return                      # unknown, or still under the ceiling
     print(f"[RECYCLE] RSS {rss:.0f}MB over {WORKER_MAX_RSS_MB}MB ceiling - "
-          f"exiting so the supervisor starts a clean worker", flush=True)
+          f"restarting this worker in place", flush=True)
     sys.stdout.flush()
     sys.stderr.flush()
-    os._exit(0)
+    # Re-exec rather than exit. Exiting assumed the tmux supervisor would put the
+    # worker back, and the first time this fired in production the tmux server
+    # had already died: the propainter worker exited on its ceiling and never
+    # returned, so renders piled up behind a process that no longer existed while
+    # the container still reported ready. execv replaces this process image with
+    # a fresh one, so the OS reclaims the memory and the worker keeps consuming
+    # without depending on anything else being alive to restart it.
+    try:
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+    except Exception as exc:
+        print(f"[RECYCLE] re-exec failed ({exc}); exiting for the supervisor",
+              flush=True)
+        os._exit(0)
 
 
 try:
