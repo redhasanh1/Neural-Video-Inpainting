@@ -97,11 +97,56 @@ class GPUCoordinator:
             'last_heartbeat': time.time()
         })
 
+    WAIT_STALE_AFTER = 60       # a waiter that has not refreshed in 60s is gone
+
+    def _waiting_key(self, worker_type: str) -> str:
+        return f'gpu:lock:waiting:{worker_type}'
+
+    def _mark_waiting(self):
+        """Announce that this worker is waiting, with a timestamp.
+
+        A plain INCR/DECR counter cannot survive a worker being killed mid-wait:
+        the decrement never runs and the count stays high forever. Every later
+        task then yields to a waiter that does not exist and times out after an
+        hour - which took the service down for five hours and could only be
+        fixed by resetting the key by hand. A sorted set scored by time is
+        self-healing: a dead worker's entry simply ages out.
+        """
+        try:
+            self.redis.zadd(self._waiting_key(self.worker_type),
+                            {self.worker_id: time.time()})
+        except Exception as exc:
+            print(f"[GPU-LOCK] could not mark waiting: {exc}")
+
+    def _unmark_waiting(self):
+        try:
+            self.redis.zrem(self._waiting_key(self.worker_type), self.worker_id)
+        except Exception as exc:
+            print(f"[GPU-LOCK] could not clear waiting: {exc}")
+
+    def _count_waiting(self, worker_type: str) -> int:
+        """Live waiters of a type, ignoring and pruning stale entries."""
+        key = self._waiting_key(worker_type)
+        cutoff = time.time() - self.WAIT_STALE_AFTER
+        try:
+            self.redis.zremrangebyscore(key, '-inf', cutoff)
+            return int(self.redis.zcard(key) or 0)
+        except Exception as exc:
+            # An old deployment left a plain counter here; drop it and start clean.
+            if 'WRONGTYPE' in str(exc):
+                try:
+                    self.redis.delete(key)
+                    print(f"[GPU-LOCK] replaced legacy counter at {key}")
+                except Exception:
+                    pass
+            else:
+                print(f"[GPU-LOCK] could not count waiters: {exc}")
+            return 0
+
     def _other_type_waiting(self) -> bool:
         """Check if the other worker type has tasks waiting."""
         other = 'propainter' if self.worker_type == 'sam2' else 'sam2'
-        waiting = self.redis.get(f'gpu:lock:waiting:{other}')
-        return waiting is not None and int(waiting) > 0
+        return self._count_waiting(other) > 0
 
     def acquire_lock(self, task_id: str, timeout: int = 3600) -> bool:
         """
@@ -121,8 +166,8 @@ class GPUCoordinator:
         log_interval = 10  # Log waiting status every 10 seconds
         last_log_time = 0
 
-        # Register in waiting queue
-        self.redis.incr(f'gpu:lock:waiting:{self.worker_type}')
+        # Register in waiting queue (timestamped, so it cannot leak)
+        self._mark_waiting()
 
         try:
             while time.time() - start_time < timeout:
@@ -160,7 +205,9 @@ class GPUCoordinator:
                         print(f"[GPU-LOCK] Yielding to other worker type (fair scheduling)")
                     last_log_time = current_time
 
-                # Wait before retry
+                # Wait before retry, refreshing our own entry so a long but
+                # genuine wait is never pruned as stale.
+                self._mark_waiting()
                 time.sleep(POLL_INTERVAL)
 
             print(f"[GPU-LOCK] TIMEOUT after {timeout}s waiting for lock")
@@ -168,7 +215,7 @@ class GPUCoordinator:
 
         finally:
             # Remove from waiting queue
-            self.redis.decr(f'gpu:lock:waiting:{self.worker_type}')
+            self._unmark_waiting()
 
     def release_lock(self, task_id: str):
         """
@@ -257,13 +304,13 @@ class GPUCoordinator:
     def get_lock_status(self) -> dict:
         """Get current lock status for monitoring."""
         current = self.redis.get(LOCK_KEY)
-        waiting_sam2 = self.redis.get('gpu:lock:waiting:sam2') or '0'
-        waiting_propainter = self.redis.get('gpu:lock:waiting:propainter') or '0'
+        waiting_sam2 = self._count_waiting('sam2')
+        waiting_propainter = self._count_waiting('propainter')
 
         status = {
             'locked': current is not None,
-            'waiting_sam2': int(waiting_sam2),
-            'waiting_propainter': int(waiting_propainter),
+            'waiting_sam2': waiting_sam2,
+            'waiting_propainter': waiting_propainter,
         }
 
         if current:
