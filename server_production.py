@@ -8804,6 +8804,48 @@ def sam2_get_result(request_id):
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
+# --- funnel logging ---------------------------------------------------------
+# Signups that never render have been impossible to explain: the database records
+# that an account exists and that it still has its credits, and nothing in
+# between. A user who clicked and got nothing looks identical to one who signed
+# up and wandered off - that is how four stuck renders went unnoticed until
+# somebody made a second account trying to get it to work. One row per attempt
+# makes the difference visible.
+_FUNNEL_READY = False
+
+
+def log_event(event, user_id=None, video_id=None, detail=None):
+    """Record one funnel step. Never raises, never blocks the request."""
+    global _FUNNEL_READY
+    try:
+        with get_db() as conn:
+            cur = conn.cursor()
+            if not _FUNNEL_READY:
+                cur.execute("""
+                    CREATE TABLE IF NOT EXISTS render_events (
+                        id         SERIAL PRIMARY KEY,
+                        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                        user_id    INTEGER,
+                        event      TEXT NOT NULL,
+                        video_id   TEXT,
+                        detail     TEXT
+                    )
+                """)
+                cur.execute("CREATE INDEX IF NOT EXISTS render_events_created "
+                            "ON render_events (created_at DESC)")
+                cur.execute("CREATE INDEX IF NOT EXISTS render_events_user "
+                            "ON render_events (user_id)")
+                _FUNNEL_READY = True
+            cur.execute(
+                "INSERT INTO render_events (user_id, event, video_id, detail) "
+                "VALUES (%s, %s, %s, %s)",
+                (user_id, event, video_id,
+                 (str(detail)[:400] if detail is not None else None))
+            )
+    except Exception as exc:
+        print(f"[FUNNEL] could not log {event}: {exc}")
+
+
 @app.route('/api/sam2/select-object', methods=['POST'])
 def sam2_select_object():
     """Interactive SAM2 object selection - uses local worker via Redis"""
@@ -8858,12 +8900,16 @@ def sam2_select_object():
                 pubsub.unsubscribe()
                 pubsub.close()
                 if response_data.get('status') == 'success':
+                    log_event('click_ok', session.get('user_id'),
+                              detail=f"score={response_data.get('score')}")
                     return jsonify({
                         'status': 'success',
                         'mask': response_data['mask'],
                         'score': response_data.get('score')
                     })
                 else:
+                    log_event('click_error', session.get('user_id'),
+                              detail=response_data.get('error'))
                     return jsonify({
                         'status': 'error',
                         'message': response_data.get('error', 'Unknown error')
@@ -8871,6 +8917,10 @@ def sam2_select_object():
 
         pubsub.unsubscribe()
         pubsub.close()
+        # Nobody answered inside the window. This is what a user experiences as
+        # "I tapped and nothing happened", and until now it left no trace at all.
+        log_event('click_timeout', session.get('user_id'),
+                  detail=f'no worker answered in {timeout}s')
         return jsonify({
             'status': 'busy',
             'message': 'The GPU is still starting up. Wait a few seconds and tap again.'
@@ -8879,6 +8929,7 @@ def sam2_select_object():
     except Exception as e:
         import traceback
         traceback.print_exc()
+        log_event('click_crash', session.get('user_id'), detail=str(e))
         return jsonify({'status': 'error', 'message': str(e)}), 500
 
 
@@ -8935,6 +8986,11 @@ def sam2_process_video():
 
         # Create a unique job ID for this SAM2 processing request
         job_id = f"sam2_{task_id}_{uuid.uuid4().hex[:8]}"
+
+        # A render actually started. Paired with the click events above, this is
+        # what separates "signed up and left" from "tried and it broke".
+        log_event('render_start', session.get('user_id'), video_id=task_id,
+                  detail=f'{len(points)} point(s)')
 
         # Get public base URL for video download (same pattern as YOLO from d5443f3d)
         def _current_public_base():
