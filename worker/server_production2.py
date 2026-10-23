@@ -49,8 +49,12 @@ def redis_from_url(url, **kwargs):
     return _redis.from_url(url, **opts)
 # --- end network hardening ---------------------------------------------------
 
+class DownloadBudgetExceeded(Exception):
+    """Raised when a download outruns its total wall-clock budget."""
+
+
 def download_file_resilient(url, dest_path, headers=None, timeout=120,
-                            attempts=6, min_bytes=1):
+                            attempts=6, min_bytes=1, max_seconds=900):
     """Download a URL to a file, surviving a connection that drops mid-transfer.
 
     A node with a weak uplink breaks a large download partway through and
@@ -59,12 +63,30 @@ def download_file_resilient(url, dest_path, headers=None, timeout=120,
     for a Range so a host that supports it resumes; the Cloudflare Worker in
     front of B2 currently ignores Range and answers 200 with the whole file, so
     against that host this degrades to a plain retry rather than a true resume.
+
+    max_seconds is a hard ceiling on the whole operation, and it is the point
+    of this signature. `timeout` is requests' per-socket timeout: it only fires
+    when NOTHING arrives for that long, so a connection trickling a few bytes a
+    minute never trips it, and six attempts of it stack up besides. A render
+    once sat at "Downloading video" for over ten minutes that way, and because
+    the task never returned, the worker's memory recycling - which only runs
+    after a task finishes - could never run either. The box climbed past its
+    memory limit and wedged, holding the GPU lock the whole time. A download
+    that cannot finish must fail fast enough to free the worker.
     """
-    import requests, time as _t
+    import requests, socket as _socket, threading, time as _t
     headers = dict(headers or {})
     last_err = None
+    started = _t.monotonic()
+
+    def _left():
+        return max_seconds - (_t.monotonic() - started)
 
     for attempt in range(1, attempts + 1):
+        if _left() <= 0:
+            raise DownloadBudgetExceeded(
+                f"download exceeded {max_seconds}s budget after "
+                f"{attempt - 1} attempt(s): {url}")
         have = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
         req_headers = dict(headers)
         mode = 'wb'
@@ -73,26 +95,82 @@ def download_file_resilient(url, dest_path, headers=None, timeout=120,
             mode = 'ab'
         try:
             with requests.get(url, headers=req_headers, stream=True,
-                              timeout=timeout) as r:
+                              timeout=min(timeout, max(1, int(_left())))) as r:
                 if have > 0 and r.status_code == 200:
                     have, mode = 0, 'wb'      # server ignored Range; start clean
                 elif have > 0 and r.status_code == 416:
                     return os.path.getsize(dest_path)   # already complete
                 r.raise_for_status()
-                with open(dest_path, mode) as f:
-                    for chunk in r.iter_content(chunk_size=1024 * 256):
-                        if chunk:
-                            f.write(chunk)
+                # The deadline has to be enforced from outside the read loop.
+                # iter_content(chunk_size=N) blocks until it has N bytes, so a
+                # connection dribbling a few bytes a minute never yields a
+                # chunk and never reaches a check placed inside the loop - the
+                # exact shape of the hang this budget exists to stop. Closing
+                # the response from a timer makes the blocked read raise.
+                expired = []
+
+                def _abort():
+                    # Response.close() only releases the connection back to the
+                    # pool; it does not interrupt a recv already blocked in
+                    # another thread. Shutting the socket down does, and that is
+                    # the only thing that reliably breaks a stalled transfer.
+                    expired.append(True)
+                    sock = None
+                    for probe in (lambda: r.raw._connection.sock,
+                                  lambda: r.raw._fp.fp.raw._sock):
+                        try:
+                            sock = probe()
+                            if sock is not None:
+                                break
+                        except Exception:
+                            continue
+                    if sock is not None:
+                        try:
+                            sock.shutdown(_socket.SHUT_RDWR)
+                        except Exception:
+                            pass
+                    try:
+                        r.close()
+                    except Exception:
+                        pass
+
+                timer = threading.Timer(max(0.1, _left()), _abort)
+                timer.daemon = True
+                timer.start()
+                try:
+                    with open(dest_path, mode) as f:
+                        for chunk in r.iter_content(chunk_size=1024 * 256):
+                            if chunk:
+                                f.write(chunk)
+                            if _left() <= 0:
+                                raise DownloadBudgetExceeded(
+                                    f"download exceeded {max_seconds}s budget "
+                                    f"mid-transfer at {f.tell()} bytes: {url}")
+                except Exception:
+                    if expired:
+                        raise DownloadBudgetExceeded(
+                            f"download exceeded {max_seconds}s budget "
+                            f"mid-transfer: {url}")
+                    raise
+                finally:
+                    timer.cancel()
             size = os.path.getsize(dest_path)
             if size < min_bytes:
                 raise IOError(f"got {size} bytes, expected at least {min_bytes}")
             if attempt > 1:
                 print(f"[DOWNLOAD] recovered on attempt {attempt} ({size} bytes)")
             return size
+        except DownloadBudgetExceeded:
+            raise                     # out of time; retrying cannot help
         except Exception as exc:
             last_err = exc
             got = os.path.getsize(dest_path) if os.path.exists(dest_path) else 0
             wait = min(2 ** (attempt - 1), 15)
+            if wait >= _left():
+                raise DownloadBudgetExceeded(
+                    f"download exceeded {max_seconds}s budget after "
+                    f"{attempt} attempt(s), last error {type(exc).__name__}: "
+                    f"{url}") from exc
             print(f"[DOWNLOAD] attempt {attempt}/{attempts} failed at {got} bytes "
                   f"({type(exc).__name__}: {str(exc)[:90]}), retrying in {wait}s")
             if attempt < attempts:
