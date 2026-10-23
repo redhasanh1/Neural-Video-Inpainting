@@ -477,6 +477,22 @@ echo ""
 send_notification "🟢 **$WORKER_NAME** READY | GPU: $GPU_NAME (${GPU_MEMORY}MB, sm_${CC}) | ROLE=$ROLE | RFCNet-TRT=$RFCNET_TRT_OK NeuFlow-TRT=$NEUFLOW_TRT_OK"
 
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# 5b. Stall watchdog
+# -----------------------------------------------------------------------------
+# The monitor below only reacts to a process that EXITS. A worker that dies
+# without the supervisor noticing - which has happened repeatedly - leaves the
+# container reporting ready while renders pile up behind a process that is gone.
+# Thirty jobs queued before anyone spotted the last one. This watches whether
+# queued work is actually moving and kills PID 1 if it is not, so Salad's
+# restart policy rebuilds everything. Set WATCHDOG_ENABLED=0 to turn it off.
+if [ -f /app/watchdog.py ]; then
+    python /app/watchdog.py &
+    echo "[START] stall watchdog running (pid $!)"
+else
+    echo "[START] WARNING: /app/watchdog.py missing, no stall detection"
+fi
+
 # 6. Monitor - block with zero CPU, restart only what died
 # -----------------------------------------------------------------------------
 while true; do
