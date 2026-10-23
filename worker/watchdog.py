@@ -23,6 +23,20 @@ QUEUES = ('propainter', 'wsl_sam2', 'celery')
 CHECK_EVERY = int(os.getenv('WATCHDOG_INTERVAL', '60'))
 STALL_AFTER = int(os.getenv('WATCHDOG_STALL_SECONDS', '600'))
 ENABLED = os.getenv('WATCHDOG_ENABLED', '1') == '1'
+WORKER = os.getenv('NOTIFY_WORKER_NAME') or os.uname().nodename
+# A watchdog that dies quietly is worse than none - it leaves you believing
+# something is watching. Publish a short-lived key so the box can be asked
+# from outside whether its watchdog is still breathing.
+ALIVE_KEY = f'watchdog:alive:{WORKER}'
+ALIVE_TTL = 180
+
+
+def beat(r, **fields):
+    try:
+        r.setex(ALIVE_KEY, ALIVE_TTL,
+                json.dumps(dict(worker=WORKER, at=int(time.time()), **fields)))
+    except Exception:
+        pass
 
 
 def log(msg):
@@ -57,6 +71,7 @@ def main():
     r = connect()
     stalled_since = None
     last_done = -1
+    beat(r, state='starting')
 
     while True:
         time.sleep(CHECK_EVERY)
@@ -75,6 +90,7 @@ def main():
                 elif time.time() - stalled_since >= STALL_AFTER:
                     log(f"STALLED: {depth} job(s) queued, nothing completed for "
                         f"{int(time.time()-stalled_since)}s - restarting container")
+                    beat(r, state='restarting', depth=depth, completed=done)
                     sys.stdout.flush()
                     os.kill(1, signal.SIGTERM)
                     time.sleep(30)
@@ -85,6 +101,9 @@ def main():
                     log(f"recovered: depth={depth} completed={done}")
                 stalled_since = None
             last_done = done
+            beat(r, state='stalling' if stalled_since else 'ok',
+                 depth=depth, completed=done,
+                 stalled_for=int(time.time()-stalled_since) if stalled_since else 0)
         except Exception as exc:
             log(f"check failed ({exc}); will retry")
             try:
