@@ -2588,6 +2588,77 @@ def _continue_after_masks_impl(self, sam2_result, video_path, video_id=None, poi
             except Exception as _e:
                 print(f"[RECEIVER][ROTATE] rotation check skipped: {_e}")
 
+        # --- DOWNSCALE BEFORE INPAINTING -------------------------------------
+        # ProPainter is the memory hog on this box: measured at 3.81GB resident
+        # and peaking near 4.9GB, against an 8GB container limit. Cost scales
+        # with frame area, so a 2160x3840 phone video costs roughly nine times
+        # a 720p one and is what drove the container to 116% and an OOM kill.
+        # RENDER_MAX_DIM existed as an env var for a while but nothing ever read
+        # it, so every render has been running at full source resolution.
+        #
+        # This runs AFTER mask generation, so SAM2 still tracks at full
+        # resolution and click alignment is untouched. The masks are rescaled to
+        # the new frame size by the existing resize step below, which already
+        # handles WSL emitting masks at a different resolution.
+        #
+        # Decode, scale and encode all stay on the GPU via NVDEC -> scale_cuda
+        # -> NVENC, which on a 3090 is far faster than round-tripping frames
+        # through host memory. Each fallback drops one stage to the CPU.
+        _max_dim = int(os.getenv('RENDER_MAX_DIM', '1280'))
+        if _max_dim > 0 and video_path and os.path.exists(video_path):
+            try:
+                import subprocess as _sp
+                import time as _tm
+                _c = cv2.VideoCapture(video_path)
+                _w0 = int(_c.get(cv2.CAP_PROP_FRAME_WIDTH))
+                _h0 = int(_c.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                _c.release()
+                if _w0 > 0 and _h0 > 0 and max(_w0, _h0) > _max_dim:
+                    _k = _max_dim / float(max(_w0, _h0))
+                    # H.264 needs even dimensions; round down to keep them legal.
+                    _nw = max(2, int(round(_w0 * _k)) & ~1)
+                    _nh = max(2, int(round(_h0 * _k)) & ~1)
+                    _small = os.path.join(TEMP_DIR, f"{video_id}_{_nw}x{_nh}.mp4")
+                    _t0 = _tm.time()
+                    _attempts = (
+                        ('NVDEC+scale_cuda+NVENC',
+                         ['ffmpeg', '-y', '-hwaccel', 'cuda',
+                          '-hwaccel_output_format', 'cuda', '-i', video_path,
+                          '-vf', f'scale_cuda={_nw}:{_nh}',
+                          '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '21', '-an', _small]),
+                        ('CPU scale + NVENC',
+                         ['ffmpeg', '-y', '-i', video_path,
+                          '-vf', f'scale={_nw}:{_nh}',
+                          '-c:v', 'h264_nvenc', '-preset', 'p4', '-cq', '21', '-an', _small]),
+                        ('CPU scale + libx264',
+                         ['ffmpeg', '-y', '-i', video_path,
+                          '-vf', f'scale={_nw}:{_nh}',
+                          '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '23', '-an', _small]),
+                    )
+                    _done = None
+                    for _label, _cmd in _attempts:
+                        try:
+                            _sp.run(_cmd, check=True, capture_output=True, timeout=900)
+                            if os.path.exists(_small) and os.path.getsize(_small) > 0:
+                                _done = _label
+                                break
+                        except Exception as _de:
+                            print(f"[RENDER][SCALE] {_label} failed ({type(_de).__name__}), "
+                                  f"trying next")
+                    if _done:
+                        print(f"[RENDER][SCALE] {_w0}x{_h0} -> {_nw}x{_nh} via {_done} "
+                              f"in {_tm.time()-_t0:.1f}s")
+                        video_path = _small
+                    else:
+                        # Better a slow 4K render than no render: the masks still
+                        # match the original, so carrying on is always correct.
+                        print(f"[RENDER][SCALE] WARNING: all downscale attempts failed; "
+                              f"rendering at {_w0}x{_h0}")
+                else:
+                    print(f"[RENDER][SCALE] {_w0}x{_h0} already within {_max_dim}, no scaling")
+            except Exception as _e:
+                print(f"[RENDER][SCALE] skipped ({_e}); rendering at source resolution")
+
         # Video metadata
         cap = cv2.VideoCapture(video_path)
         if not cap.isOpened():
