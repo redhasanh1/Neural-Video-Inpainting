@@ -755,62 +755,86 @@ except Exception as _exc:
 _gpu_coord = GPUCoordinator(worker_type='propainter')
 
 # [NOTIFY] Send notification when Celery worker is ACTUALLY ready
-from celery.signals import worker_ready
+from celery.signals import worker_ready, worker_init, task_failure
 
-def gpu_usable():
-    """Report whether a CUDA device exists and we can actually allocate on it.
+import gpu_preflight
 
-    torch.cuda.is_available() on its own is not enough. A node whose driver has
-    fallen over still imports torch cleanly and only throws
-    "CUDA error: unknown error" on the first real allocation, so do one.
-    """
+def _notify(text):
+    """Best-effort ntfy post; never let alerting break the caller."""
+    import requests
+    webhook_url = os.environ.get('NOTIFY_WEBHOOK_URL')
+    if not webhook_url:
+        return
     try:
-        import torch
-        if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
-            return False, "No GPU", 0
-        name = torch.cuda.get_device_name(0)
-        mem = torch.cuda.get_device_properties(0).total_memory // (1024 ** 2)
-        probe = torch.zeros(8, device='cuda')
-        del probe
-        return True, name, mem
-    except Exception as exc:
-        return False, f"GPU unusable ({type(exc).__name__}: {exc})", 0
+        requests.post(webhook_url, json={"content": text}, timeout=5)
+    except Exception:
+        pass
+
+
+def _worker_name():
+    return os.environ.get('NOTIFY_WORKER_NAME',
+                          os.uname().nodename if hasattr(os, 'uname') else 'worker')
+
+
+@worker_init.connect
+def on_worker_init(**kwargs):
+    """Prove CUDA works before this process consumes a single job.
+
+    This has to run at worker_init, not worker_ready: by the time worker_ready
+    fires the consumer is already attached to the queue and may have taken
+    work. A box that fails every render in three seconds looks to the stall
+    watchdog exactly like a healthy, fast, empty queue, which is how
+    2026-10-25 went unnoticed for four and a half hours.
+    """
+    import time as _time
+    ok, detail, vram = gpu_preflight.cuda_healthy()
+    gpu_preflight.write_health(ok)
+
+    if not ok:
+        name = _worker_name()
+        msg = f"🔴 Worker **{name}** REFUSING TO START - CUDA preflight failed: {detail}"
+        print(f"[GPU] {msg}", flush=True)
+        _notify(msg)
+        gpu_preflight.mark_fatal(f'startup preflight: {detail}')
+        if gpu_preflight.reallocate(f'CUDA preflight failed: {detail}'):
+            print("[GPU] asked SaladCloud to move this container", flush=True)
+            _notify(f"🔁 **{name}** requested reallocation to another node")
+        _time.sleep(15)
+        os._exit(1)
+
+    print(f"[GPU] preflight OK: {detail} ({vram}MB VRAM)", flush=True)
+
+
+@task_failure.connect
+def on_task_failure(task_id=None, exception=None, **kwargs):
+    """Move off this node when a render dies because the GPU went away.
+
+    Ordinary out-of-memory and our own bugs are deliberately not fatal; see
+    gpu_preflight.is_fatal. Retrying into a poisoned CUDA context just spends
+    one more user credit per attempt.
+    """
+    if exception is None or not gpu_preflight.is_fatal(exception):
+        return
+    name = _worker_name()
+    detail = f'{type(exception).__name__}: {exception}'[:300]
+    msg = f"🔴 **{name}** GPU FATAL on {task_id}: {detail}"
+    print(f"[GPU] {msg}", flush=True)
+    _notify(msg)
+    gpu_preflight.write_health(False)
+    gpu_preflight.mark_fatal(detail)
+    if gpu_preflight.reallocate(f'CUDA became unusable: {detail}'):
+        _notify(f"🔁 **{name}** requested reallocation to another node")
 
 
 @worker_ready.connect
 def on_worker_ready(**kwargs):
-    """Refuse to serve without a GPU, then announce readiness."""
-    import requests
-    import time as _time
-    webhook_url = os.environ.get('NOTIFY_WEBHOOK_URL')
-    worker_name = os.environ.get('NOTIFY_WORKER_NAME', os.uname().nodename if hasattr(os, 'uname') else 'worker')
-
-    ok, gpu_name, gpu_mem = gpu_usable()
-
-    if not ok:
-        # A worker with no GPU drains the queue into instant failures and spends
-        # a user credit on every one. On 2026-10-25 a recycle came back with
-        # 0MB VRAM and this box did exactly that for four and a half hours
-        # before anyone noticed. Die instead: the tmux supervisor restarts us,
-        # and when the GPU is really gone the Salad liveness probe moves the
-        # container to another node.
-        msg = f"🔴 Worker **{worker_name}** REFUSING TO START - {gpu_name}"
-        print(f"[GPU] {msg}", flush=True)
-        if webhook_url:
-            try:
-                requests.post(webhook_url, json={"content": msg}, timeout=5)
-            except Exception:
-                pass
-        _time.sleep(15)
-        os._exit(1)
-
-    if webhook_url:
-        try:
-            msg = f"🟢 Worker **{worker_name}** is READY! GPU: {gpu_name} ({gpu_mem}MB VRAM)"
-            requests.post(webhook_url, json={"content": msg}, timeout=5)
-            print(f"[NOTIFY] Startup notification sent: {msg}")
-        except Exception as e:
-            print(f"[NOTIFY] Failed to send startup notification: {e}")
+    """Announce readiness. The GPU gate already ran at worker_init."""
+    gpu_preflight.write_health(True)
+    worker_name = _worker_name()
+    ok, gpu_name, gpu_mem = gpu_preflight.cuda_healthy()
+    msg = f"🟢 Worker **{worker_name}** is READY! GPU: {gpu_name} ({gpu_mem}MB VRAM)"
+    print(f"[NOTIFY] {msg}", flush=True)
+    _notify(msg)
 
 # Get FFmpeg/FFprobe executables
 def get_ffmpeg_executables():

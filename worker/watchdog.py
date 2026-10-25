@@ -18,6 +18,8 @@ import time
 
 import redis
 
+import gpu_preflight
+
 REDIS_URL = os.getenv('REDIS_URL')
 QUEUES = ('propainter', 'wsl_sam2', 'celery')
 CHECK_EVERY = int(os.getenv('WATCHDOG_INTERVAL', '60'))
@@ -27,6 +29,9 @@ STALL_AFTER = int(os.getenv('WATCHDOG_STALL_SECONDS', '600'))
 # holds the GPU lock forever. That is exactly how the box went to 116% memory
 # with nothing queued. So watch the lock holder's own progress too.
 WEDGE_AFTER = int(os.getenv('WATCHDOG_WEDGE_SECONDS', '1200'))
+# How many renders may fail back to back, with nothing succeeding in
+# between, before we treat this box as broken rather than busy.
+FAIL_STREAK = int(os.getenv('WATCHDOG_FAIL_STREAK', '3'))
 ENABLED = os.getenv('WATCHDOG_ENABLED', '1') == '1'
 WORKER = os.getenv('NOTIFY_WORKER_NAME') or os.uname().nodename
 # A watchdog that dies quietly is worse than none - it leaves you believing
@@ -123,6 +128,38 @@ def completed_count(r):
     return n
 
 
+def result_health(r):
+    """Return (successes, failures, newest_gpu_fatal_text).
+
+    completed_count() counts every result blob whatever its status, which is
+    exactly why a box that failed every render in three seconds read as a
+    healthy, fast, empty queue for four and a half hours on 2026-10-25. Work
+    "flowing" is not the same as work succeeding.
+    """
+    ok = bad = 0
+    fatal = None
+    for key in r.scan_iter(match='celery-task-meta-*', count=1000):
+        raw = r.get(key)
+        if not raw:
+            continue
+        try:
+            data = json.loads(raw)
+        except Exception:
+            continue
+        status = data.get('status')
+        if status == 'SUCCESS':
+            ok += 1
+        elif status == 'FAILURE':
+            bad += 1
+            try:
+                text = json.dumps(data.get('result'))[:600]
+            except Exception:
+                continue
+            if gpu_preflight.is_fatal(RuntimeError(text)):
+                fatal = text[:200]
+    return ok, bad, fatal
+
+
 def main():
     if not ENABLED:
         log("disabled via WATCHDOG_ENABLED=0")
@@ -136,6 +173,8 @@ def main():
     r = connect()
     stalled_since = None
     last_done = -1
+    last_ok = last_bad = -1
+    fail_streak = 0
     wedge_mark = None       # (task_id, fingerprint) last seen on the lock
     wedge_since = None
     beat(r, state='starting')
@@ -179,12 +218,38 @@ def main():
                 wedge_since = None
             wedge_mark = mark
 
+            # A run of failures with nothing succeeding in between means the
+            # box is broken, not busy. The stall and wedge checks above both
+            # miss this because the queue drains perfectly well when every
+            # job fails in three seconds.
+            ok_n, bad_n, fatal_text = result_health(r)
+            if last_ok >= 0:
+                if ok_n > last_ok:
+                    fail_streak = 0
+                elif bad_n > last_bad:
+                    fail_streak += bad_n - last_bad
+            last_ok, last_bad = ok_n, bad_n
+
+            if fail_streak >= FAIL_STREAK:
+                why = (f"{fail_streak} renders failed with none succeeding"
+                       + (f"; GPU fatal: {fatal_text}" if fatal_text else ""))
+                log(f"FAILING: {why}")
+                beat(r, state='failing', depth=depth, completed=done,
+                     fail_streak=fail_streak, vram=gpu_vram_mb())
+                if fatal_text:
+                    gpu_preflight.mark_fatal(fatal_text)
+                    if gpu_preflight.reallocate(f'repeated GPU failures: {why}'):
+                        log("asked SaladCloud to move this container")
+                        return
+                restart(r, why, depth=depth)
+                return
+
             beat(r, state='stalling' if stalled_since else
                        ('wedging' if wedge_since else 'ok'),
                  depth=depth, completed=done,
                  stalled_for=int(time.time()-stalled_since) if stalled_since else 0,
                  wedged_for=int(time.time()-wedge_since) if wedge_since else 0,
-                 holder=task_id, vram=gpu_vram_mb())
+                 holder=task_id, vram=gpu_vram_mb(), fail_streak=fail_streak)
         except Exception as exc:
             log(f"check failed ({exc}); will retry")
             try:
