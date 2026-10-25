@@ -36,6 +36,25 @@ ALIVE_KEY = f'watchdog:alive:{WORKER}'
 ALIVE_TTL = 180
 
 
+def gpu_vram_mb():
+    """Total VRAM in MB per nvidia-smi, or 0 when the GPU has gone away.
+
+    Deliberately shells out instead of importing torch: this process has to
+    stay small, and a dead driver is visible to nvidia-smi either way.
+    """
+    try:
+        import subprocess
+        out = subprocess.run(
+            ['nvidia-smi', '--query-gpu=memory.total',
+             '--format=csv,noheader,nounits'],
+            capture_output=True, text=True, timeout=20)
+        if out.returncode != 0:
+            return 0
+        return int(out.stdout.strip().splitlines()[0].strip())
+    except Exception:
+        return 0
+
+
 def beat(r, **fields):
     try:
         r.setex(ALIVE_KEY, ALIVE_TTL,
@@ -165,7 +184,7 @@ def main():
                  depth=depth, completed=done,
                  stalled_for=int(time.time()-stalled_since) if stalled_since else 0,
                  wedged_for=int(time.time()-wedge_since) if wedge_since else 0,
-                 holder=task_id)
+                 holder=task_id, vram=gpu_vram_mb())
         except Exception as exc:
             log(f"check failed ({exc}); will retry")
             try:

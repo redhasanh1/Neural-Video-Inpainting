@@ -757,19 +757,55 @@ _gpu_coord = GPUCoordinator(worker_type='propainter')
 # [NOTIFY] Send notification when Celery worker is ACTUALLY ready
 from celery.signals import worker_ready
 
+def gpu_usable():
+    """Report whether a CUDA device exists and we can actually allocate on it.
+
+    torch.cuda.is_available() on its own is not enough. A node whose driver has
+    fallen over still imports torch cleanly and only throws
+    "CUDA error: unknown error" on the first real allocation, so do one.
+    """
+    try:
+        import torch
+        if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
+            return False, "No GPU", 0
+        name = torch.cuda.get_device_name(0)
+        mem = torch.cuda.get_device_properties(0).total_memory // (1024 ** 2)
+        probe = torch.zeros(8, device='cuda')
+        del probe
+        return True, name, mem
+    except Exception as exc:
+        return False, f"GPU unusable ({type(exc).__name__}: {exc})", 0
+
+
 @worker_ready.connect
 def on_worker_ready(**kwargs):
-    """Send notification when Celery is truly ready (after TRT engines built)"""
+    """Refuse to serve without a GPU, then announce readiness."""
     import requests
+    import time as _time
     webhook_url = os.environ.get('NOTIFY_WEBHOOK_URL')
     worker_name = os.environ.get('NOTIFY_WORKER_NAME', os.uname().nodename if hasattr(os, 'uname') else 'worker')
 
+    ok, gpu_name, gpu_mem = gpu_usable()
+
+    if not ok:
+        # A worker with no GPU drains the queue into instant failures and spends
+        # a user credit on every one. On 2026-10-25 a recycle came back with
+        # 0MB VRAM and this box did exactly that for four and a half hours
+        # before anyone noticed. Die instead: the tmux supervisor restarts us,
+        # and when the GPU is really gone the Salad liveness probe moves the
+        # container to another node.
+        msg = f"🔴 Worker **{worker_name}** REFUSING TO START - {gpu_name}"
+        print(f"[GPU] {msg}", flush=True)
+        if webhook_url:
+            try:
+                requests.post(webhook_url, json={"content": msg}, timeout=5)
+            except Exception:
+                pass
+        _time.sleep(15)
+        os._exit(1)
+
     if webhook_url:
         try:
-            import torch
-            gpu_name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "No GPU"
-            gpu_mem = torch.cuda.get_device_properties(0).total_memory // (1024**2) if torch.cuda.is_available() else 0
-
             msg = f"🟢 Worker **{worker_name}** is READY! GPU: {gpu_name} ({gpu_mem}MB VRAM)"
             requests.post(webhook_url, json={"content": msg}, timeout=5)
             print(f"[NOTIFY] Startup notification sent: {msg}")
