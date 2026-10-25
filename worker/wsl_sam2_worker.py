@@ -194,6 +194,75 @@ except Exception as _exc:
     print(f"[RECYCLE] could not install memory recycling: {_exc}")
 # --- end memory recycling --------------------------------------------------
 
+# --- GPU gate --------------------------------------------------------------
+# This is the process that actually broke on 2026-10-25: every failure that
+# day was raised instantiating the SAM2 model
+# (sam2.modeling.position_encoding.PositionEmbeddingSine) after a recycle came
+# back with no GPU. server_production2 runs as a separate celery worker, so
+# its gate does nothing for this one. Both have to refuse to serve.
+import gpu_preflight
+
+
+def _sam2_notify(text):
+    """Best-effort ntfy post; never let alerting break the caller."""
+    import requests
+    url = os.environ.get('NOTIFY_WEBHOOK_URL')
+    if not url:
+        return
+    try:
+        requests.post(url, json={"content": text}, timeout=5)
+    except Exception:
+        pass
+
+
+def _sam2_worker_name():
+    base = os.environ.get('NOTIFY_WORKER_NAME',
+                          os.uname().nodename if hasattr(os, 'uname') else 'worker')
+    return base + '/sam2'
+
+
+try:
+    from celery.signals import worker_init as _worker_init
+    from celery.signals import task_failure as _task_failure
+
+    @_worker_init.connect
+    def _sam2_gpu_gate(**_kw):
+        """Prove CUDA works before this worker takes a single mask job."""
+        import time as _time
+        ok, detail, vram = gpu_preflight.cuda_healthy()
+        gpu_preflight.write_health(ok)
+        if ok:
+            print(f"[GPU] sam2 preflight OK: {detail} ({vram}MB VRAM)", flush=True)
+            return
+        name = _sam2_worker_name()
+        msg = f"🔴 Worker **{name}** REFUSING TO START - CUDA preflight failed: {detail}"
+        print(f"[GPU] {msg}", flush=True)
+        _sam2_notify(msg)
+        gpu_preflight.mark_fatal(f'sam2 startup preflight: {detail}')
+        if gpu_preflight.reallocate(f'CUDA preflight failed in sam2: {detail}'):
+            print("[GPU] asked SaladCloud to move this container", flush=True)
+            _sam2_notify(f"🔁 **{name}** requested reallocation to another node")
+        _time.sleep(15)
+        os._exit(1)
+
+    @_task_failure.connect
+    def _sam2_fatal(task_id=None, exception=None, **_kw):
+        """Move off this node when mask generation dies with the GPU gone."""
+        if exception is None or not gpu_preflight.is_fatal(exception):
+            return
+        name = _sam2_worker_name()
+        detail = f'{type(exception).__name__}: {exception}'[:300]
+        msg = f"🔴 **{name}** GPU FATAL on {task_id}: {detail}"
+        print(f"[GPU] {msg}", flush=True)
+        _sam2_notify(msg)
+        gpu_preflight.write_health(False)
+        gpu_preflight.mark_fatal(detail)
+        if gpu_preflight.reallocate(f'CUDA became unusable in sam2: {detail}'):
+            _sam2_notify(f"🔁 **{name}** requested reallocation to another node")
+except Exception as _exc:
+    print(f"[GPU] could not install the GPU gate: {_exc}")
+# --- end GPU gate ----------------------------------------------------------
+
 # Add local path for imports
 sys.path.insert(0, BASE_DIR)
 
