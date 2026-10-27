@@ -347,6 +347,9 @@ class DALIChunkedStreamer:
 
         # Async loading queue
         self.load_queue = queue.Queue(maxsize=2)
+        # Set by the loader thread when it dies. The consumer raises this
+        # instead of the bare queue.Empty it would otherwise see 30s later.
+        self.loader_error = None
         self.stop_event = threading.Event()
         self.loading_complete = threading.Event()
 
@@ -514,6 +517,7 @@ class DALIChunkedStreamer:
                     except Exception as e:
                         print(f"[DALI] Error at chunk {chunk_num}: {e}")
                         traceback.print_exc()
+                        self.loader_error = f"DALI chunk {chunk_num}: {type(e).__name__}: {e}"
                         break
                 # === PHASE 2: FFmpeg CUDA for last 2 chunks (GPU decode, fast seeking) ===
                 if chunk_num < num_chunks:
@@ -575,6 +579,7 @@ class DALIChunkedStreamer:
             except Exception as e:
                 print(f"[DALI-LOADER] Fatal error in loader thread: {e}")
                 traceback.print_exc()
+                self.loader_error = f"loader thread: {type(e).__name__}: {e}"
 
         self._loader_thread = threading.Thread(target=loader_worker, daemon=True)
         self._loader_thread.start()
@@ -624,6 +629,11 @@ class DALIChunkedStreamer:
             print(f"[DALI-ASYNC] Activated chunk {queued_start}-{actual_end}")
 
         except Exception as e:
+            # queue.Empty here means the loader thread is gone. Report what
+            # actually killed it; the symptom alone is not diagnosable.
+            if self.loader_error:
+                print(f"[DALI-ASYNC] Loader died: {self.loader_error}")
+                raise RuntimeError(f"video loader failed: {self.loader_error}") from e
             print(f"[DALI-ASYNC] Queue timeout for chunk {chunk_start}: {e}")
             raise
 
@@ -1361,7 +1371,12 @@ def track_video_pytorch_only(frames_dir, total_frames, output_masks_dir, points=
                 for obj_id in unique_obj_ids:
                     # Get points for this object
                     obj_points = [points[i] for i in range(len(points)) if object_ids[i] == obj_id]
-                    obj_labels = [labels[i] if labels else 1 for i in range(len(points)) if object_ids[i] == obj_id]
+                    # points/object_ids lengths are checked above, labels was not:
+                    # a burst of taps can deliver one more point than labels and
+                    # labels[i] then walks off the end. Missing label means a tap,
+                    # which is label 1.
+                    obj_labels = [labels[i] if labels is not None and i < len(labels) else 1
+                                  for i in range(len(points)) if object_ids[i] == obj_id]
 
                     points_array = np.array([[p[0], p[1]] for p in obj_points], dtype=np.float32)
                     labels_array = np.array(obj_labels, dtype=np.int32)

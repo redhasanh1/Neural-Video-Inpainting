@@ -128,16 +128,22 @@ def completed_count(r):
     return n
 
 
-def result_health(r):
-    """Return (successes, failures, newest_gpu_fatal_text).
+def result_health(r, seen=None):
+    """Return (successes, failures, fatal_text_from_new_failures, ids).
 
     completed_count() counts every result blob whatever its status, which is
     exactly why a box that failed every render in three seconds read as a
     healthy, fast, empty queue for four and a half hours on 2026-10-25. Work
     "flowing" is not the same as work succeeding.
+
+    Only failures that appeared since the previous look can set fatal_text.
+    Result blobs live for a day, so scoring every one of them would let a
+    GPU error from this morning justify reallocating the node this evening
+    over three unrelated failures.
     """
     ok = bad = 0
     fatal = None
+    ids = set()
     for key in r.scan_iter(match='celery-task-meta-*', count=1000):
         raw = r.get(key)
         if not raw:
@@ -146,18 +152,22 @@ def result_health(r):
             data = json.loads(raw)
         except Exception:
             continue
+        task_id = key[len('celery-task-meta-'):]
+        ids.add(task_id)
         status = data.get('status')
         if status == 'SUCCESS':
             ok += 1
         elif status == 'FAILURE':
             bad += 1
+            if seen is not None and task_id in seen:
+                continue
             try:
                 text = json.dumps(data.get('result'))[:600]
             except Exception:
                 continue
             if gpu_preflight.is_fatal(RuntimeError(text)):
                 fatal = text[:200]
-    return ok, bad, fatal
+    return ok, bad, fatal, ids
 
 
 def main():
@@ -175,6 +185,7 @@ def main():
     last_done = -1
     last_ok = last_bad = -1
     fail_streak = 0
+    seen_ids = None         # task ids already scored; None means first look
     wedge_mark = None       # (task_id, fingerprint) last seen on the lock
     wedge_since = None
     beat(r, state='starting')
@@ -222,7 +233,7 @@ def main():
             # box is broken, not busy. The stall and wedge checks above both
             # miss this because the queue drains perfectly well when every
             # job fails in three seconds.
-            ok_n, bad_n, fatal_text = result_health(r)
+            ok_n, bad_n, fatal_text, seen_ids = result_health(r, seen_ids)
             if last_ok >= 0:
                 if ok_n > last_ok:
                     fail_streak = 0
