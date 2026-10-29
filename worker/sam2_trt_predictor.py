@@ -5,6 +5,7 @@ Fast, stable, Windows-compatible predictor for RTX 4090
 """
 import os
 import sys
+import time
 
 # Add TensorRT DLLs to PATH (Windows-specific fix)
 tensorrt_bin = r"D:\watermarkz\TensorRT-10.13.3.9\bin"
@@ -80,18 +81,6 @@ class SAM2TensorRTPredictor:
         # Original image dimensions for coordinate normalization
         self.orig_w = None
         self.orig_h = None
-
-        # The decoder engine is built with a fixed optimization profile. Asking
-        # for a batch above its max makes set_input_shape fail, and TensorRT then
-        # keeps the previous shape instead - which is how a 17th click used to
-        # return 16 masks and blow up the combine loop below.
-        self.max_prompts = 16
-        try:
-            prof = self.decoder_engine.get_tensor_profile_shape('point_coords', 0)
-            self.max_prompts = int(prof[2][0])
-        except Exception as e:
-            logger.warning(f"[WARN] Could not read decoder profile, assuming {self.max_prompts}: {e}")
-        logger.info(f"[DECODER] Max points per request: {self.max_prompts}")
 
         logger.info(f"[OK] Loaded encoder: {self.encoder_engine_path.name}")
         logger.info(f"[OK] Loaded decoder: {self.decoder_engine_path.name}")
@@ -248,14 +237,6 @@ class SAM2TensorRTPredictor:
         points = np.array(point_coords, dtype=np.float32)
         labels = np.array(point_labels, dtype=np.float32)
 
-        # Never ask the engine for more prompts than its profile allows. The most
-        # recent clicks are the ones refining the selection, so keep those.
-        cap = getattr(self, 'max_prompts', 16)
-        if len(points) > cap:
-            logger.warning(f"[TRT] {len(points)} points exceeds engine max {cap}, using the last {cap}")
-            points = points[-cap:]
-            labels = labels[-cap:]
-
         # Scale coordinates from original image size to 1024x1024
         scale_x = 1024.0 / self.orig_w
         scale_y = 1024.0 / self.orig_h
@@ -336,17 +317,24 @@ class SAM2TensorRTPredictor:
 
         # IMPORTANT: Set dynamic input shapes before inference
         logger.info(f"[TRT] Setting dynamic shapes for batch size: {num_prompts}")
-        shape_ok = (
-            self.decoder_context.set_input_shape('point_coords', (num_prompts, 2, 2))
-            and self.decoder_context.set_input_shape('point_labels', (num_prompts, 2))
-            and self.decoder_context.set_input_shape('mask_input', (num_prompts, 1, 256, 256))
-        )
-        if shape_ok is False:
-            # A rejected shape leaves the previous one in place, so the outputs
-            # would quietly come back the wrong size. Say so instead.
-            raise RuntimeError(
-                f"TensorRT rejected batch size {num_prompts} "
-                f"(engine max {getattr(self, 'max_prompts', 'unknown')})")
+        def _set_shapes():
+            return (
+                self.decoder_context.set_input_shape('point_coords', (num_prompts, 2, 2))
+                and self.decoder_context.set_input_shape('point_labels', (num_prompts, 2))
+                and self.decoder_context.set_input_shape('mask_input', (num_prompts, 1, 256, 256))
+            )
+
+        # A rejected shape is not an exception - TensorRT just keeps the shape
+        # from the previous call, so the outputs come back the wrong size and
+        # the combine loop below used to walk off the end. Retry once (these
+        # failures line up with a render hogging VRAM), then give up loudly.
+        if _set_shapes() is False:
+            logger.warning(f"[TRT] set_input_shape({num_prompts}) refused, retrying")
+            time.sleep(0.25)
+            if _set_shapes() is False:
+                raise RuntimeError(
+                    f"TensorRT would not accept batch size {num_prompts} - "
+                    f"GPU is likely busy, try the click again")
 
         # Allocate GPU memory for outputs - MUST query shapes AFTER setting input shapes
         # because outputs have dynamic dimensions tied to the batch size
@@ -413,8 +401,8 @@ class SAM2TensorRTPredictor:
             if len(labels) != num_prompts:
                 logger.warning(
                     f"[TRT] decoder returned {num_prompts} masks for {len(labels)} points")
-            # Walk the masks the decoder actually produced. A missing label means
-            # a plain tap, which is label 1.
+            # Walk the masks the decoder actually produced, never the point
+            # count. A missing label means a plain tap, which is label 1.
             for i in range(num_prompts):
                 label = labels[i] if i < len(labels) else 1
                 mask_binary_i = all_masks_probs[i] > 0.5
