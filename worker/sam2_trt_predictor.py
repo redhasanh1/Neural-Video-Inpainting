@@ -82,6 +82,17 @@ class SAM2TensorRTPredictor:
         self.orig_w = None
         self.orig_h = None
 
+        # The decoder is built with one optimization profile and will refuse any
+        # batch above its max - set_input_shape returns False rather than raising,
+        # so the context quietly keeps the previous request's size.
+        self.max_prompts = 16
+        try:
+            prof = self.decoder_engine.get_tensor_profile_shape('point_coords', 0)
+            self.max_prompts = int(prof[2][0])
+        except Exception as e:
+            logger.warning(f"[WARN] Could not read decoder profile, assuming {self.max_prompts}: {e}")
+        logger.info(f"[DECODER] Max points per request: {self.max_prompts}")
+
         logger.info(f"[OK] Loaded encoder: {self.encoder_engine_path.name}")
         logger.info(f"[OK] Loaded decoder: {self.decoder_engine_path.name}")
 
@@ -237,6 +248,15 @@ class SAM2TensorRTPredictor:
         points = np.array(point_coords, dtype=np.float32)
         labels = np.array(point_labels, dtype=np.float32)
 
+        # This preview decoder tops out at max_prompts. The render path uses
+        # PyTorch SAM2 with every point, so trimming here only affects the
+        # on-screen mask - and the newest clicks are the ones refining it.
+        cap = getattr(self, 'max_prompts', 16)
+        if len(points) > cap:
+            logger.warning(f"[TRT] {len(points)} points over engine max {cap}, previewing the last {cap}")
+            points = points[-cap:]
+            labels = labels[-cap:]
+
         # Scale coordinates from original image size to 1024x1024
         scale_x = 1024.0 / self.orig_w
         scale_y = 1024.0 / self.orig_h
@@ -324,17 +344,13 @@ class SAM2TensorRTPredictor:
                 and self.decoder_context.set_input_shape('mask_input', (num_prompts, 1, 256, 256))
             )
 
-        # A rejected shape is not an exception - TensorRT just keeps the shape
-        # from the previous call, so the outputs come back the wrong size and
-        # the combine loop below used to walk off the end. Retry once (these
-        # failures line up with a render hogging VRAM), then give up loudly.
         if _set_shapes() is False:
             logger.warning(f"[TRT] set_input_shape({num_prompts}) refused, retrying")
             time.sleep(0.25)
             if _set_shapes() is False:
                 raise RuntimeError(
-                    f"TensorRT would not accept batch size {num_prompts} - "
-                    f"GPU is likely busy, try the click again")
+                    f"TensorRT would not accept batch size {num_prompts} "
+                    f"(engine max {getattr(self, 'max_prompts', 'unknown')})")
 
         # Allocate GPU memory for outputs - MUST query shapes AFTER setting input shapes
         # because outputs have dynamic dimensions tied to the batch size
