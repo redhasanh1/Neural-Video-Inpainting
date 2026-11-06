@@ -818,6 +818,38 @@ def generate_masks_yolo(self, video_path, masks_dir, confidence_threshold=0.3, p
         }
 
 
+def _drain_stderr(proc, label, keep=200):
+    """Continuously drain a subprocess stderr pipe into a bounded buffer.
+
+    An ffmpeg started with stderr=PIPE that nobody reads will block forever
+    once the OS pipe buffer (64 KB) fills. The decoder then stops producing
+    frames and the render loop blocks on stdout.read() holding the GPU lock;
+    the encoder stops consuming stdin and the loop blocks on stdin.write().
+    Either way the task wedges with no error and never releases the GPU.
+    One job hung this way at frame 5700 and held the lock for over a day.
+    """
+    import collections, threading
+    buf = collections.deque(maxlen=keep)
+    if proc.stderr is None:
+        return buf
+
+    def pump():
+        try:
+            for line in iter(proc.stderr.readline, b''):
+                buf.append(line.decode('utf-8', 'replace').rstrip())
+        except Exception:
+            pass
+        finally:
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
+
+    t = threading.Thread(target=pump, name='stderr-%s' % label, daemon=True)
+    t.start()
+    return buf
+
+
 @celery.task(name='sam2.apply_simple_effects', bind=True)
 def apply_simple_effects(self, video_url, masks_url, operation='keep_object', background='color', bg_color='#00FF00', blur_amount=25, dilation=4, output_format='mp4', masks_dir_local=None, video_path_local=None):
     """
@@ -962,6 +994,7 @@ def _apply_simple_effects_impl(self, video_url, masks_url, operation='keep_objec
             '-row-mt', '1',           # Row-based multithreading
             output_path
         ], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        encode_err = _drain_stderr(ffmpeg_encode, 'encode-webm')
     else:
         # MP4 mode (default) - NVENC h264
         output_path = "/tmp/simple_fx_output.mp4"
@@ -985,6 +1018,7 @@ def _apply_simple_effects_impl(self, video_url, masks_url, operation='keep_objec
             '-shortest',
             output_path
         ], stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+        encode_err = _drain_stderr(ffmpeg_encode, 'encode-mp4')
 
     # === GPU STREAMING: Process ONE frame at a time (like CPU, but fast!) ===
     # Pre-allocate reusable GPU buffers (~25MB total, not 12GB!)
@@ -1022,6 +1056,7 @@ def _apply_simple_effects_impl(self, video_url, masks_url, operation='keep_objec
         '-s', f'{width}x{height}',
         'pipe:1'
     ], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    decode_err = _drain_stderr(ffmpeg_decode, 'decode')
 
     frame_size = width * height * 3
     frame_idx = 0
@@ -1181,9 +1216,9 @@ def _apply_simple_effects_impl(self, video_url, masks_url, operation='keep_objec
         ffmpeg_encode.stdin.close()
         return_code = ffmpeg_encode.wait()
         if return_code != 0:
-            stderr = ffmpeg_encode.stderr.read().decode() if ffmpeg_encode.stderr else ''
-            print(f"[GPU-FX] FFmpeg error (code {return_code}): {stderr[:500]}")
-            raise RuntimeError(f"FFmpeg encoding failed: {stderr[:200]}")
+            stderr = '\n'.join(encode_err)
+            print(f"[GPU-FX] FFmpeg error (code {return_code}): {stderr[-500:]}")
+            raise RuntimeError(f"FFmpeg encoding failed: {stderr[-200:]}")
         print(f"[GPU-FX] Encoded {frame_idx} frames")
 
     self.update_state(state='PROCESSING', meta={'progress': 92, 'status': 'Uploading to CDN...'})
