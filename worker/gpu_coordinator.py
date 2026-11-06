@@ -26,6 +26,11 @@ REDIS_URL = os.getenv('REDIS_URL')
 LOCK_TTL = int(os.getenv('GPU_LOCK_TTL', '120'))  # 2 minutes - auto-expire if worker dies
 HEARTBEAT_INTERVAL = int(os.getenv('GPU_HEARTBEAT_INTERVAL', '30'))  # Extend TTL every 30s
 POLL_INTERVAL = 2  # Check lock every 2 seconds
+# A hung task keeps its heartbeat thread alive, so the TTL above is renewed
+# forever and the lock never frees. Past this ceiling the heartbeat gives the
+# lock up instead, so the queue behind it keeps moving. Well above the longest
+# genuine render.
+MAX_HOLD_SECONDS = int(os.getenv('GPU_MAX_HOLD', '2700'))  # 45 minutes
 
 # Redis keys
 LOCK_KEY = 'gpu:lock'
@@ -87,14 +92,21 @@ class GPUCoordinator:
         self._heartbeat_thread = None
         self._stop_heartbeat = threading.Event()
 
-    def _lock_value(self, task_id: str) -> str:
-        """Create JSON lock value with metadata."""
+    def _lock_value(self, task_id: str, acquired_at: float = None) -> str:
+        """Create JSON lock value with metadata.
+
+        acquired_at must be carried through from the original acquisition. The
+        heartbeat rewriting it made every lock look freshly taken, so a task
+        that had held the GPU for 23 hours reported an age of 18 seconds and
+        starved every queued render for a day without showing up anywhere.
+        """
+        now = time.time()
         return json.dumps({
             'worker_type': self.worker_type,
             'worker_id': self.worker_id,
             'task_id': task_id,
-            'acquired_at': time.time(),
-            'last_heartbeat': time.time()
+            'acquired_at': now if acquired_at is None else acquired_at,
+            'last_heartbeat': now
         })
 
     WAIT_STALE_AFTER = 60       # a waiter that has not refreshed in 60s is gone
@@ -180,12 +192,13 @@ class GPUCoordinator:
 
                 if not should_yield:
                     # Try to acquire lock with SETNX
-                    lock_value = self._lock_value(task_id)
+                    acquired_at = time.time()
+                    lock_value = self._lock_value(task_id, acquired_at=acquired_at)
                     if self.redis.set(LOCK_KEY, lock_value, nx=True, ex=LOCK_TTL):
                         # Lock acquired!
                         self.redis.set(LAST_TYPE_KEY, self.worker_type)
                         print(f"[GPU-LOCK] Acquired by {self.worker_id} for task {task_id}")
-                        self._start_heartbeat(task_id)
+                        self._start_heartbeat(task_id, acquired_at)
                         return True
 
                 # Lock held by someone else - log status periodically
@@ -246,8 +259,12 @@ class GPUCoordinator:
             self._heartbeat_thread.join(timeout=5)
             self._heartbeat_thread = None
 
-    def _start_heartbeat(self, task_id: str):
-        """Start background thread to extend lock TTL for long tasks."""
+    def _start_heartbeat(self, task_id: str, acquired_at: float):
+        """Start background thread to extend lock TTL for long tasks.
+
+        Refuses to renew past MAX_HOLD_SECONDS so one wedged task cannot hold
+        the GPU indefinitely.
+        """
         self._stop_heartbeat.clear()
 
         def heartbeat_loop():
@@ -255,11 +272,25 @@ class GPUCoordinator:
                 try:
                     # Extend lock TTL (only if we still own it)
                     current = self.redis.get(LOCK_KEY)
-                    if current:
-                        holder = json.loads(current)
-                        if holder.get('worker_id') == self.worker_id:
-                            lock_value = self._lock_value(task_id)
-                            self.redis.set(LOCK_KEY, lock_value, xx=True, ex=LOCK_TTL)
+                    if not current:
+                        continue
+                    holder = json.loads(current)
+                    if holder.get('worker_id') != self.worker_id:
+                        continue
+
+                    held = time.time() - acquired_at
+                    if held > MAX_HOLD_SECONDS:
+                        # Give the lock up rather than renew it. The task keeps
+                        # running, but everything queued behind it can proceed
+                        # instead of waiting out its own acquire timeout.
+                        print(f"[GPU-LOCK] HELD {int(held)}s by task {task_id}, "
+                              f"over the {MAX_HOLD_SECONDS}s ceiling - releasing "
+                              f"so the queue can move. This task looks wedged.")
+                        self.redis.delete(LOCK_KEY)
+                        return
+
+                    lock_value = self._lock_value(task_id, acquired_at=acquired_at)
+                    self.redis.set(LOCK_KEY, lock_value, xx=True, ex=LOCK_TTL)
                 except Exception as e:
                     print(f"[GPU-LOCK] Heartbeat error: {e}")
 
@@ -317,7 +348,13 @@ class GPUCoordinator:
             try:
                 holder = json.loads(current)
                 status['holder'] = holder
-                status['age_seconds'] = time.time() - holder.get('acquired_at', 0)
+                acquired_at = holder.get('acquired_at')
+                status['age_seconds'] = (
+                    time.time() - acquired_at if acquired_at else None
+                )
+                status['over_max_hold'] = bool(
+                    acquired_at and time.time() - acquired_at > MAX_HOLD_SECONDS
+                )
             except json.JSONDecodeError:
                 status['holder'] = 'corrupted'
 
