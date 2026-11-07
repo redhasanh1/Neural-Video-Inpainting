@@ -3042,6 +3042,20 @@ def _continue_after_masks_impl(self, sam2_result, video_path, video_id=None, poi
                 if ret:
                     preloaded_frames[frame_idx] = VRAMCompressor.compress_frame(frame)
             cap_preload.release()
+            # The frame count in a video header is an estimate. Phone videos often
+            # claim one or two frames more than can actually be decoded, and failing
+            # the whole render over that lost a user's video. A short tail is fine:
+            # trim to what was read. Anything bigger is a real problem.
+            loaded = len(preloaded_frames)
+            tail_ok = max(3, total_frames // 100)
+            if (0 < loaded < total_frames and total_frames - loaded <= tail_ok
+                    and max(preloaded_frames) == loaded - 1):
+                print(f"[SAM2] Header said {total_frames} frames, decoded {loaded}. Trimming the missing tail.")
+                total_frames = loaded
+                clamped = [(s, min(e, total_frames), bb) for (s, e, bb) in segments if s < min(e, total_frames)]
+                if segments and not clamped:
+                    clamped = [(total_frames - 1, total_frames, segments[-1][2])]
+                segments = clamped
             # Verify all frames were loaded - fail early with clear error instead of cryptic KeyError
             if len(preloaded_frames) < total_frames:
                 raise ValueError(f"Could not read all video frames: got {len(preloaded_frames)}/{total_frames}. Video may be corrupted or URL is invalid.")
