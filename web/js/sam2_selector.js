@@ -257,7 +257,15 @@ class SAM2Selector {
         }
 
         // Request mask from server for this single point
+        this._missed = false;
         const mask = await this.requestMask(this.currentSelection.points);
+
+        if (!mask && this._missed) {
+            this.currentSelection = null;
+            if (this.options.onPointsChange) {
+                this.options.onPointsChange(this.getAllPoints());
+            }
+        }
 
         if (mask) {
             // Update current selection's mask
@@ -315,6 +323,14 @@ class SAM2Selector {
             const data = await response.json();
 
             if (data.status === 'success' && data.mask) {
+                // A score this low means the tap landed on nothing the model
+                // could pick out. Keeping it would send an empty mask to render.
+                if (typeof data.score === 'number' && data.score < 0.01) {
+                    this._missed = true;
+                    this.notify('Nothing found there. Tap right on the object you want to remove.');
+                    return null;
+                }
+                this.notify('');
                 // Decode mask from base64
                 const mask = await this.decodeMask(data.mask);
                 console.log(`[SAM2Selector] Mask received (${mask.width}x${mask.height})`);
